@@ -200,7 +200,7 @@ spec:
           # that was pushed. A checkout that has never been pushed therefore
           # fails visibly at the registry instead of quietly running whatever
           # ":latest" happens to be.
-          image: us-central1-docker.pkg.dev/platform-factory-ref/svc-hello/svc-hello:REPLACE_ME
+          image: us-central1-docker.pkg.dev/platform-factory-ref/svc-hello/svc-hello:3870e4c
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
