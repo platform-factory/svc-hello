@@ -1,0 +1,269 @@
+# svc-hello's Deployment.
+#
+# Everything in this directory is synced by the Argo CD Application that the
+# System Composition created for this System (path k8s/, revision main, into
+# namespace svc-hello, under AppProject svc-hello). Nothing here creates a
+# Namespace or a ServiceAccount: those are the platform's, composed by the
+# System XR.
+#
+# The AppProject would refuse a Namespace outright — a Namespace is
+# cluster-scoped and the project's clusterResourceWhitelist is deliberately
+# absent, which denies every cluster-scoped kind. A ServiceAccount it would
+# ACCEPT: the System Composition deliberately does not blacklist that kind
+# (third-party Helm charts create service accounts constantly, and blocking
+# them turns the paved road into a dead end). A tenant-created ServiceAccount
+# is simply inert — rbac.authorization.k8s.io IS blacklisted, so nothing can
+# be bound to it, and an iam.gke.io/gcp-service-account annotation grants
+# nothing without the matching Workload Identity binding on the Google side,
+# which only the System Composition creates.
+#
+# The one thing a team has to copy onto the paved road by hand is the Cloud SQL
+# Auth Proxy sidecar below. ADR-0013 §4: "The sidecar is a snippet the paved
+# road gives the team for their Deployment; it is *not* injected." A Deployment
+# that omits it simply cannot reach the database.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svc-hello
+  namespace: svc-hello
+  labels:
+    app.kubernetes.io/name: svc-hello
+spec:
+  # One replica. This is a reference build on a small node pool and teardown
+  # between sessions is the cost-control move; a second replica would prove
+  # nothing this one does not.
+  replicas: 1
+  revisionHistoryLimit: 3
+  # An hour, not the 600s default. This service is deployed BEFORE its Database
+  # claim exists (the build order ships svc-hello, then the Database XRD), and
+  # /healthz stays 503 until Cloud SQL finishes provisioning the instance and
+  # the Composition's GRANT job has run — comfortably longer than ten minutes
+  # on a cold instance. At the default the Deployment would publish
+  # Progressing=False/ProgressDeadlineExceeded and Argo CD's built-in
+  # Deployment health check would report this Application Degraded for reasons
+  # that are not a defect. See README, "Deploying before the database exists".
+  progressDeadlineSeconds: 3600
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: svc-hello
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: svc-hello
+    spec:
+      # The Kubernetes ServiceAccount the System Composition created and
+      # annotated with iam.gke.io/gcp-service-account. This single line is what
+      # gives the pod its Google identity: the proxy sidecar below picks up
+      # Workload Identity credentials from the node metadata server as
+      # svc-hello@platform-factory-ref.iam.gserviceaccount.com. There is no
+      # Secret, no key file, and no imagePullSecret anywhere in this pod.
+      serviceAccountName: svc-hello
+      # No projected Kubernetes token is needed: GKE Workload Identity resolves
+      # this pod's KSA to its GSA inside the node's metadata server, which the
+      # proxy reaches over the normal metadata endpoint. Nothing in this pod
+      # talks to the Kubernetes API, so mounting the token would be pure
+      # attack surface.
+      automountServiceAccountToken: false
+
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # A NATIVE sidecar: an initContainer with restartPolicy: Always. Verified
+      # 2026-09-16 against kubernetes.io "Sidecar Containers" — the
+      # SidecarContainers feature gate is "active by default since Kubernetes
+      # v1.29", and this cluster is on GKE's REGULAR release channel, well past
+      # that. Why it matters here rather than a second entry in containers[]:
+      #   - the proxy is started AND passes its startup probe before the app
+      #     container runs, so the app never sees a closed port on first boot;
+      #   - on shutdown the kubelet stops the app first and the proxy second,
+      #     so in-flight queries finish instead of losing their tunnel.
+      initContainers:
+        - name: cloud-sql-proxy
+          # Google-hosted on gcr.io. ADR-0010 sends cluster pulls through the
+          # Artifact Registry remotes, and explicitly exempts Google-hosted
+          # images, which reach the nodes over Private Google Access with no
+          # registry egress. So this reference is correct as written and must
+          # NOT be rewritten to a remote.
+          #
+          # 2.25.4 is the current 2.x release (GitHub releases, read
+          # 2026-09-16) and the tag resolves on gcr.io (manifest HTTP 200,
+          # same date). The image tag carries no leading "v".
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.25.4
+          restartPolicy: Always
+          args:
+            # Dial the instance's private IP. The instance has no public IP at
+            # all (ADR-0013 §2), and pods reach it over the Private Services
+            # Access peering that layer 1 established — pod IPs are alias IPs
+            # from a subnet secondary range, which the service producer network
+            # learns by default, so no extra routing is needed.
+            - "--private-ip"
+            # The whole point. The proxy mints a short-lived IAM token from the
+            # pod's Google identity and logs in with it, so no password for
+            # this database exists anywhere for this application.
+            - "--auto-iam-authn"
+            # JSON on stdout, which Cloud Logging parses into structured
+            # entries instead of one blob per line.
+            - "--structured-logs"
+            - "--port=5432"
+            # Its own HTTP endpoint for the probes below. Without this the
+            # sidecar has no readiness signal and the app could start against a
+            # tunnel that is not up yet.
+            - "--health-check"
+            - "--http-address=0.0.0.0"
+            - "--http-port=9801"
+            # The kubelet stops a native sidecar with SIGTERM on every normal
+            # rollout. Verified 2026-09-16 against cloud-sql-proxy v2.25.4
+            # cmd/root.go:550 — without this flag the proxy's exit code for
+            # SIGTERM is 143, so `kubectl describe pod` records
+            # "Last State: Terminated, Exit Code: 143" on a perfectly clean
+            # shutdown and every rollout looks like a crash to whoever reads it
+            # next.
+            - "--exit-zero-on-sigterm"
+            # project:region:instance. The instance's external name is
+            # <namespace>-<claim> (ADR-0015's deterministic naming), and the
+            # claim in database.yaml is named "main" in namespace svc-hello,
+            # so: svc-hello-main. The same string is published by the Database
+            # Composition in the ConfigMap main-connection, key connectionName;
+            # it is written literally here because a missing ConfigMap would
+            # wedge the pod in CreateContainerConfigError, and this service is
+            # deployed before its database exists.
+            - "platform-factory-ref:us-central1:svc-hello-main"
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 9801
+            periodSeconds: 5
+            # Up to ~2.5 minutes. A first boot before the Cloud SQL instance
+            # finishes provisioning is normal, not a failure.
+            failureThreshold: 30
+          readinessProbe:
+            # A readinessProbe on a restartable init container feeds the POD's
+            # ready state (kubernetes.io, "Sidecar Containers", read
+            # 2026-09-16: "If a readinessProbe is specified for this init
+            # container, its result will be used to determine the ready state
+            # of the Pod").
+            #
+            # Be precise about what it covers. Verified 2026-09-16 against
+            # cloud-sql-proxy v2.25.4 internal/healthcheck/healthcheck.go
+            # HandleReadiness: it returns 503 only when the proxy has not
+            # started, is shutting down, or has hit --max-connections. It never
+            # dials the instance, so this is "the proxy is up and has capacity",
+            # NOT "the database is reachable". The reachability signal is the
+            # app container's /healthz probe further down, which runs SELECT 1
+            # through this tunnel.
+            httpGet:
+              path: /readiness
+              port: 9801
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 9801
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          # EVERY container needs an explicit cpu AND memory limit here, and it
+          # is not a style preference. The System Composition puts a
+          # ResourceQuota on this namespace whose spec.hard includes
+          # `limits.cpu` (size class S = "4"). Kubernetes' quota admission then
+          # requires a per-container value for every cpu/memory key the quota
+          # tracks, across containers AND restartable init containers
+          # (kubernetes.io, "Resource Quotas", read 2026-09-16: "For cpu and
+          # memory resources, ResourceQuotas enforce that every (new) pod in
+          # that namespace sets a limit for that resource"). Omit one and the
+          # Deployment applies cleanly, Argo CD stays green, and the ReplicaSet
+          # silently never creates a pod:
+          #   pods "svc-hello-..." is forbidden: failed quota: svc-hello:
+          #   must specify limits.cpu for: cloud-sql-proxy,svc-hello
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+
+      containers:
+        - name: svc-hello
+          # REPLACE_ME is deliberate. M2 pushes this image by hand (see the
+          # Makefile), and `make set-image` rewrites this line to the commit
+          # that was pushed. A checkout that has never been pushed therefore
+          # fails visibly at the registry instead of quietly running whatever
+          # ":latest" happens to be.
+          image: us-central1-docker.pkg.dev/platform-factory-ref/svc-hello/svc-hello:3870e4c
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DB_ENABLED
+              value: "true"
+            # 127.0.0.1 is the proxy sidecar, in this pod's own network
+            # namespace. The app never learns the instance's private IP.
+            - name: DB_HOST
+              value: "127.0.0.1"
+            - name: DB_PORT
+              value: "5432"
+            # The Cloud SQL IAM database username for a service account is its
+            # email with ".gserviceaccount.com" stripped — Cloud SQL's rule,
+            # forced by the Postgres username length limit (ADR-0013). The
+            # Database Composition creates exactly this user, type
+            # CLOUD_IAM_SERVICE_ACCOUNT, and publishes it as key iamUser in the
+            # main-connection ConfigMap.
+            - name: DB_USER
+              value: "svc-hello@platform-factory-ref.iam"
+            # The Database Composition always names the database "app".
+            - name: DB_NAME
+              value: "app"
+          # Readiness, not liveness, checks the database. A database that has
+          # gone away is a reason to stop taking traffic, never a reason to
+          # restart the process — restarting would not fix it and would throw
+          # away the pool's backoff state. This probe going green is the second
+          # of the two timestamps ADR-0013 says C-07(a) records.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # Root, not /healthz: this answers "is the process wedged", and it
+            # is true even with no database.
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The binary is static and writes nothing to disk.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # 65532 is distroless's "nonroot" uid, which the Dockerfile's
+            # USER nonroot:nonroot selects. Stated here so the kubelet rejects
+            # a mismatched image rather than discovering it at runtime.
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          # cpu limit is mandatory for the same reason as the sidecar's above:
+          # the namespace ResourceQuota tracks limits.cpu. 250m + 500m = 750m
+          # against a 4-core ceiling leaves the size-S class plenty of room.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
