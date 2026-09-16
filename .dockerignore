@@ -1,0 +1,10 @@
+# The Dockerfile COPYs its sources by name, so this file is not about
+# correctness — it is about not shipping the git history and the manifests into
+# the build daemon on every `make build`.
+.git
+.github
+k8s
+README.md
+Makefile
+Dockerfile
+.dockerignore

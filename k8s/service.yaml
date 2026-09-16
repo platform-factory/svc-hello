@@ -1,0 +1,25 @@
+# In-cluster address for svc-hello.
+#
+# ClusterIP only. There is no Ingress and no LoadBalancer in M2: the cluster's
+# control plane and workloads are reached over the tailnet (ADR-0011), so
+# testing this service is `kubectl port-forward svc/svc-hello 8080:80` from a
+# machine on the tailnet. Exposing it publicly would be a separate decision
+# with its own certificate, DNS and policy surface.
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-hello
+  namespace: svc-hello
+  labels:
+    app.kubernetes.io/name: svc-hello
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: svc-hello
+  ports:
+    - name: http
+      port: 80
+      # The named port on the app container, not the number. If the container
+      # port ever moves, this keeps working.
+      targetPort: http
+      protocol: TCP
