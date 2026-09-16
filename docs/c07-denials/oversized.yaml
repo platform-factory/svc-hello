@@ -1,0 +1,9 @@
+apiVersion: platform.thecloudgeek.io/v1alpha1
+kind: Database
+metadata:
+  name: denied-size
+  namespace: svc-hello
+spec:
+  engine: POSTGRES_16
+  region: us-central1
+  size: XL

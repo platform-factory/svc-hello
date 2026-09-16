@@ -16,7 +16,15 @@
 # latest v5, verified on GitHub 2026-09-16) declares `go 1.25.0`, so a 1.23
 # toolchain refuses to build it. 1.27.1 is the current release (Docker Hub tag
 # list read 2026-09-16).
-FROM golang:1.27.1-alpine AS builder
+#
+# --platform=$BUILDPLATFORM: the builder stage runs NATIVELY on whatever
+# machine runs the build, and Go cross-compiles for the target below. Without
+# this, `docker build --platform linux/amd64` on an Apple-silicon laptop runs
+# the amd64 Go toolchain under CPU emulation, and Go's runtime panics inside
+# the net resolver during `go mod tidy` (observed 2026-09-16 on the first M2
+# image build: a goroutine dump from net.(*Resolver).lookupIPAddr, exit 2).
+# Cross-compiling is what Go is good at; emulating a compiler is not.
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS builder
 
 # git is needed by the module proxy fallback path; ca-certificates for TLS to
 # proxy.golang.org.
@@ -29,9 +37,16 @@ WORKDIR /src
 # what resolves and records the dependency graph. GOFLAGS=-mod=mod lets it write
 # go.mod/go.sum in the build context copy (the default -mod=readonly would fail
 # the moment tidy wanted to add a line).
+#
+# TARGETOS/TARGETARCH are set by BuildKit from --platform (linux/amd64 for the
+# GKE node pool, see the Makefile); the binary is built for the target while
+# the toolchain runs on the build host.
+ARG TARGETOS
+ARG TARGETARCH
 ENV GOFLAGS=-mod=mod \
     CGO_ENABLED=0 \
-    GOOS=linux
+    GOOS=${TARGETOS:-linux} \
+    GOARCH=${TARGETARCH:-amd64}
 
 # One COPY, not three, because go.sum is optional: `go.su[m]` is a glob, and a
 # glob that matches nothing is only tolerated when some other source in the same

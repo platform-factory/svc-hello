@@ -1,0 +1,10 @@
+apiVersion: platform.thecloudgeek.io/v1alpha1
+kind: Database
+metadata:
+  name: denied-cel
+  namespace: svc-hello
+spec:
+  engine: POSTGRES_16
+  region: us-central1
+  size: L
+  tier: standard
