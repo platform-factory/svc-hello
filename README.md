@@ -356,8 +356,19 @@ crossplane resource validate <xrd.yaml> docs/c07-denials/
 ```
 
 prefixed `[x] schema validation error …` and `[x] CEL validation error …`
-(crossplane v2.5.0). **The Argo CD surface — a bad claim merged to `main` — is
-NOT YET RUN.**
+(crossplane v2.5.0).
+
+The Argo CD surface was run on 2026-09-17 by merging `wrong-region.yaml` into
+`k8s/` on `main`, deliberately skipping CI (PR #5, reverted by #6). The
+Application went `OutOfSync` while staying `Healthy`, the claim showed
+`SyncFailed`, the sync kept retrying, and the running service was untouched:
+
+```
+one or more synchronization tasks completed unsuccessfully, reason: Database.platform.thecloudgeek.io "denied-region" is invalid: [spec.region: Unsupported value: "europe-west1": supported values: "us-central1", "us-east1", …]
+```
+
+Only that one claim went through Argo CD; the oversized and CEL claims were
+recorded at the CLI and the API server.
 
 The third denial in C-07(b) is not a schema denial at all and lives in
 `platform-config`: Kyverno's reality gate, tested by applying a raw
@@ -373,7 +384,7 @@ SQL instance. A schema failure names the field path; a Kyverno failure names
 the policy and the rule; and a policy whose webhook matches nothing names
 nothing at all. That last case is the one worth remembering.
 
-### (c) Delete the claim, the database survives — NOT YET RUN
+### (c) Delete the claim, the database survives — run 2026-09-17, and it held
 
 Delete `k8s/database.yaml`, merge, let Argo prune the claim, then confirm the
 Cloud SQL instance is still there. ADR-0015 makes the instance, the database and
@@ -383,7 +394,18 @@ the registry repository durable: the managed resources carry
 claim adopts the same instance back, by its deterministic external name
 `svc-hello-main`.
 
-This has not been run. The *deletion protection* half was exercised by accident
+What happened (PRs #3 and #4): the claim was pruned 23 seconds after the merge
+and every composed object left the namespace — but the Cloud SQL instance
+stayed `RUNNABLE` with its original creation time, the `app` database and the
+IAM user stayed, and this service's pod never stopped serving, because nothing
+it depends on had changed. When the claim came back, the instance was adopted
+rather than created: Ready 66 seconds after the claim appeared, against about
+fourteen minutes for a fresh instance, and the row written the day before read
+back through `/notes`. The IAM user was adopted too, so the provider bug above
+was never touched — it bites only when a user has to be *created*. The same
+row then survived a full cluster teardown, a `park`, and a rebuild.
+
+The *deletion protection* half had been exercised by accident the day before,
 on 2026-09-16, on the raw instance created by hand while the Kyverno gate was
 blind: removing it needed both locks cleared deliberately — the managed
 object's `deletionProtection` patched to false **and** `gcloud sql instances
