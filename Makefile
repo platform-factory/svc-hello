@@ -46,7 +46,12 @@ login: ## Teach docker how to authenticate to Artifact Registry (once per laptop
 
 .PHONY: build
 build: ## Build the image locally, tagged with the current commit
-	docker build --platform $(PLATFORM) -t $(IMAGE):$(TAG) .
+	@# buildx, not the legacy builder. `docker build --platform` without buildx
+	@# loses the platform at the first intermediate layer and fails at the next
+	@# COPY ("does not provide the specified platform") — found on the first M2
+	@# build, 2026-09-16. --load puts the result in the local image store so
+	@# the push target below can find it.
+	docker buildx build --platform $(PLATFORM) --load -t $(IMAGE):$(TAG) .
 
 .PHONY: push
 push: build ## Build and push to Artifact Registry
