@@ -88,6 +88,41 @@ Reading it from the top:
 expires in about an hour and is replaced automatically, which is what ADR-0003's
 "managed rotation" was always trying to buy.
 
+**This ran for real on 2026-09-16, and it works — but the Postgres user it
+depends on could not be created by the platform.** At 17:13:28 a probe pod in
+this namespace did `POST /notes` then `GET /notes` and got the row back, with
+`/healthz` answering 200 and no Secret mounted anywhere in the application pod.
+So the mechanism above is confirmed end to end [C].
+
+What is broken sits one step earlier. provider-upjet-gcp v3.0.0 cannot create a
+**passwordless** Cloud SQL user — the create path panics with `async create
+failed: recovered from panic: not a string` (upstream
+crossplane-contrib/provider-upjet-gcp issue #1000, open; root-caused by a
+maintainer on 2026-09-14: v3.0.0 strips `password_wo` from the runtime schema,
+so every passwordless `sql.User` create panics). A
+`CLOUD_IAM_SERVICE_ACCOUNT` user is passwordless by definition, which means the
+one kind this whole design needs is the one kind the provider cannot make at
+this version. Nor can the Composition dodge it by supplying a password: Cloud
+SQL answers `HTTPError 400: Invalid request: Cloud IAM password cannot be set
+in the database.`
+
+Until a fixed provider ships, **each database costs one manual command**, run
+out of band so the provider's `Observe` path adopts the user it did not create:
+
+```bash
+gcloud sql users create svc-hello@platform-factory-ref.iam \
+  --instance=svc-hello-main --type=CLOUD_IAM_SERVICE_ACCOUNT
+```
+
+The symptom that says you need it is in this service's own log:
+`FATAL: password authentication failed for user "svc-hello@platform-factory-ref.iam"`.
+On the first run the managed resource sat failing from 17:08:17 until that
+command at 17:10:44; the user was adopted `Ready` at 17:11:22, the `GRANT` Job
+ran 17:11:22→17:11:42, and this pod went Ready at 17:11:51. None of that
+changes the credential story — the app still holds no password — but it does
+mean the paved road is not yet hands-off for a database, and it is recorded as
+a manual intervention every time.
+
 **The one password that does exist** is the built-in `postgres` account's. The
 platform generates it, stores it as the Secret `main-admin` in this namespace,
 and uses it exactly once per grant change — a `Job` that runs `psql` and grants
@@ -145,13 +180,53 @@ account key anywhere.
 
 ```bash
 make login       # once per laptop: gcloud auth configure-docker us-central1-docker.pkg.dev
-make push        # builds linux/amd64, tags it with the current commit sha, pushes
+
+docker buildx build --platform linux/amd64 \
+  -t us-central1-docker.pkg.dev/platform-factory-ref/svc-hello/svc-hello:$(git rev-parse --short HEAD) \
+  --push .
+
 make set-image   # rewrites the image line in k8s/deployment.yaml to that sha
 git commit -am "svc-hello: pin image to $(git rev-parse --short HEAD)"
 git push
 ```
 
 That last push is the deploy: Argo CD syncs `k8s/` from `main`.
+
+**`docker buildx`, and `--platform linux/amd64`, and a builder stage that runs
+natively — all three, and none of them is a preference.** This was the one M2
+step an authoring agent reported as "docker build succeeded" when it had not
+succeeded, so it is written out here: the two failures that actually appeared
+on 2026-09-16, plus the standing reason the platform is named at all.
+
+The reason the platform is named: the GKE node pool is **amd64** and the laptop
+that pushes may not be, so an arm64 image would land in the registry perfectly
+happily and then fail on the node with `exec format error`. That was not hit on
+2026-09-16, because the platform was named.
+
+The two failures, in the order they appeared:
+
+- The **legacy builder cannot cross-build at all.** It loses the requested
+  platform at the first intermediate layer, so `--platform` on it is a
+  suggestion rather than an instruction. `buildx` (BuildKit) is what honours
+  it, and it is also what defines the `$BUILDPLATFORM`, `TARGETOS` and
+  `TARGETARCH` arguments the Dockerfile reads.
+- **Emulating the compiler does not work either.** With `buildx` alone, the
+  amd64 Go toolchain runs under CPU emulation on Apple silicon and Go's
+  runtime panics inside the net resolver during `go mod tidy` — a goroutine
+  dump from `net.(*Resolver).lookupIPAddr`, exit 2.
+
+The fix is in the `Dockerfile`, not in the command: the builder stage is
+declared `FROM --platform=$BUILDPLATFORM`, so the Go toolchain runs natively on
+whatever machine is building, and Go cross-compiles the binary for
+`TARGETOS`/`TARGETARCH`. Cross-compiling is the thing Go is good at; emulating
+a compiler is not. The runtime stage is still distroless static for the target
+platform.
+
+> **The `Makefile` has not caught up.** `make build` (and therefore `make
+> push`) still calls `docker build`, so it only does the right thing on a
+> Docker installation where BuildKit is the default builder. Use the explicit
+> `docker buildx build` above until the target is changed; `make login` and
+> `make set-image` are unaffected.
 
 The manifest ships with the tag `REPLACE_ME` on purpose. A checkout that has
 never been pushed fails visibly at the registry instead of quietly running
@@ -166,7 +241,7 @@ the System.
 ## Running it locally
 
 ```bash
-make build
+make build                     # same caveat as above: use docker buildx if make build fails
 make run                       # no database; GET localhost:8080/ and /healthz
 ```
 
@@ -229,15 +304,76 @@ parts. This repo is the subject of (a) and (c).
    A row comes back that was written by an identity which was never given a
    password.
 
-### (b) Denials — recorded from the other two repos
+**Run on 2026-09-16.** The PR had merged at 16:31:24 while the cluster was
+still down, so the honest clock starts when Argo CD applied the claim: claim
+created 16:54:06, instance `svc-hello-main` (db-f1-micro, private IP
+`10.60.0.3`, no public IP, `cloudsql.iam_authentication` on, deletion
+protection on) `RUNNABLE` at roughly 17:08, IAM user created by hand at
+17:10:44 (see the provider bug above), `GRANT` Job 17:11:22→17:11:42, pod Ready
+17:11:51, `Database` XR Ready 17:12:41. **Claim → usable: 17m45s, including one
+manual step**, of which 17:08:17→17:10:44 is the managed resource sitting
+failed while waiting for a human to run that command. Step 4's
+proof ran at 17:13:28 and returned the row.
 
-Change `spec.size` to `L` while `spec.tier` is `standard`, or `spec.region` to
-something outside the enum, and record the message verbatim from the PR check,
-the API server, and the Argo CD UI. A schema failure names the field path; a
-Kyverno failure names the policy and the rule. That difference is the ADR-0014
-"schema denies first" distinction made visible.
+One thing that bit on the way and is worth knowing before you copy step 4: the
+namespace's `ResourceQuota` rejects a probe pod that declares no resources —
+`pods "c07-probe" is forbidden: failed quota: svc-hello: must specify
+limits.cpu … requests.memory`. The quota is doing its job; give the probe pod
+requests and limits.
 
-### (c) Delete the claim, the database survives
+### (b) Denials — the fixtures, and what each one demonstrates
+
+`docs/c07-denials/` holds three deliberately-bad `Database` claims. They are
+never applied from `k8s/` — the test applies them by hand and records what the
+developer sees at each surface. Each one demonstrates a different *kind* of
+rule, which is the point: ADR-0014 says the schema denies first because a
+schema can say more than people expect.
+
+| Fixture | What is wrong | What it demonstrates |
+|---|---|---|
+| `wrong-region.yaml` | `region: europe-west1` | a plain `enum` — the denial lists the regions that exist |
+| `oversized.yaml` | `size: XL` | a second `enum` — the denial lists the sizes that exist |
+| `cel-size-tier.yaml` | `size: L` with `tier: standard` | a **CEL rule** across two fields, which no enum can express, returning the platform's own sentence rather than a type error |
+
+Two of the three surfaces were recorded on 2026-09-16. The API server, verbatim:
+
+```
+The Database "denied-region" is invalid: * spec.region: Unsupported value: "europe-west1": supported values: "us-central1", "us-east1"
+The Database "denied-size" is invalid: * spec.size: Unsupported value: "XL": supported values: "S", "M", "L"
+The Database "denied-cel" is invalid: spec: Invalid value: size L is only available to a critical-tier database. Set tier: critical if this database really is business critical, otherwise use size M.
+```
+
+(The two enum denials also print `* <nil>: Invalid value: null: some validation
+rules were not checked because the object was invalid; correct the existing
+errors to complete validation` — the CEL rules are skipped once the object has
+already failed structurally.)
+
+The CLI surface, offline and with no cluster, is the same three sentences:
+
+```
+crossplane resource validate <xrd.yaml> docs/c07-denials/
+→ Total 3 resources: 0 missing schemas, 0 success cases, 3 failure cases
+```
+
+prefixed `[x] schema validation error …` and `[x] CEL validation error …`
+(crossplane v2.5.0). **The Argo CD surface — a bad claim merged to `main` — is
+NOT YET RUN.**
+
+The third denial in C-07(b) is not a schema denial at all and lives in
+`platform-config`: Kyverno's reality gate, tested by applying a raw
+`DatabaseInstance` by hand in this namespace. After the fix that landed during
+the run, it answers:
+
+```
+admission webhook "validate.kyverno.svc-fail" denied the request: resource DatabaseInstance/svc-hello/raw-observe-only was blocked due to the following policies deny-raw-managed-resources: no-raw-managed-resources-in-tenant-namespaces: Cloud resources are not created by hand here. Ask for what you need with a platform.thecloudgeek.io claim — a Database, for example — …
+```
+
+**Before** that fix the identical test was *admitted* and created a real Cloud
+SQL instance. A schema failure names the field path; a Kyverno failure names
+the policy and the rule; and a policy whose webhook matches nothing names
+nothing at all. That last case is the one worth remembering.
+
+### (c) Delete the claim, the database survives — NOT YET RUN
 
 Delete `k8s/database.yaml`, merge, let Argo prune the claim, then confirm the
 Cloud SQL instance is still there. ADR-0015 makes the instance, the database and
@@ -247,16 +383,26 @@ the registry repository durable: the managed resources carry
 claim adopts the same instance back, by its deterministic external name
 `svc-hello-main`.
 
+This has not been run. The *deletion protection* half was exercised by accident
+on 2026-09-16, on the raw instance created by hand while the Kyverno gate was
+blind: removing it needed both locks cleared deliberately — the managed
+object's `deletionProtection` patched to false **and** `gcloud sql instances
+patch --no-deletion-protection` — after which the provider deleted it. Both
+locks held until someone deliberately removed them, which is the property
+ADR-0015 was after, arrived at from the wrong direction.
+
 ## What's in this repo
 
 ```
 main.go                         the service: three routes, pgx, no framework
 go.mod / go.sum                 one dependency (pgx v5)
-Dockerfile                      multi-stage; distroless static runtime, nonroot
-Makefile                        build / push / set-image — the hand-push path
+Dockerfile                      multi-stage; native builder cross-compiles, distroless static runtime, nonroot
+Makefile                        login / build / push / set-image — the hand-push path
+                                (build still calls `docker build`; see the build section)
 k8s/deployment.yaml             app container + Cloud SQL Auth Proxy native sidecar
 k8s/service.yaml                ClusterIP 80 → 8080
 k8s/database.yaml               the Database claim: main, POSTGRES_16, us-central1, S
+docs/c07-denials/               three claims that must be denied — one per rule kind
 .github/workflows/validate.yml  YAML parse, go vet/build, best-effort XRD check
 ```
 
@@ -265,5 +411,23 @@ and a reader should be able to see what will be applied by reading the files.
 
 ## Status
 
-**Status:** built in M2. The image is pushed by hand; the tag in
-`k8s/deployment.yaml` is the commit it was built from.
+**Status:** built in M2 and **running as of 2026-09-16**. The image is pushed
+by hand. The manifest pins `:3870e4c`, the commit the service code was authored
+in — but no image could be built at all until the Dockerfile fix in `8225853`,
+so the image that is actually running was built from a later tree and tagged
+with that earlier sha. Re-pinning it is a follow-up. The
+service is deployed in the `svc-hello` namespace with its Cloud SQL instance
+`svc-hello-main`, reachable with no password, and C-07(a) is recorded above.
+
+Two things about this repo are not settled. The `Database` claim still needs
+one manual `gcloud sql users create` per database while
+provider-upjet-gcp #1000 is open, so the paved road is not hands-off here yet.
+And **C-07(c) has not been run** — the claim has never been deleted and
+re-added, so "delete the claim, the database survives, re-adding adopts it
+back" is still an assertion in this repo rather than a result.
+
+The System that owns this service was moved from the `payments` team to
+`checkout` on 2026-09-16 as the C-06 test. Nothing in this repo changed for
+that, which is the point — the namespace, the registry repository, the image
+paths and this service's own identity all belong to the System, not to the
+team.
