@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use or build on this work, please cite it as below."
+type: software
+title: "Platform Factory: svc-hello"
+abstract: "The canonical example service for the Platform Factory reference implementation, including passwordless database access through a platform Database claim."
+authors:
+  - family-names: Patel
+    given-names: Ronak
+    affiliation: thecloudgeek LLC
+repository-code: "https://github.com/platform-factory/svc-hello"
+url: "https://github.com/thecloudgeek/platform-factory"
+license: Apache-2.0
+keywords:
+  - Platform Factory
+  - platform engineering
+  - internal developer platform
+  - GitOps
+  - Kubernetes
+  - Crossplane
+  - Argo CD
