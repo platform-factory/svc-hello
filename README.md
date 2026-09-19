@@ -11,6 +11,11 @@ This repo is one of seven that make up the reference implementation of the
 build plan — lives at
 [https://github.com/thecloudgeek/platform-factory](https://github.com/thecloudgeek/platform-factory).
 
+Platform Factory was designed and written by **Ronak Patel**
+([thecloudgeek LLC](https://github.com/thecloudgeek)). Licensed Apache-2.0 —
+the attribution to keep is in [NOTICE](NOTICE), and
+[CITATION.cff](CITATION.cff) says how to cite it.
+
 This repo is built out in **M2**.
 
 ## What it demonstrates
