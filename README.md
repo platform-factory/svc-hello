@@ -9,7 +9,7 @@ here to demonstrate is not the code. It is the road the code travels on.
 This repo is one of seven that make up the reference implementation of the
 **Platform Factory** pattern. The design seed — pattern docs, ADRs, and the
 build plan — lives at
-[https://github.com/thecloudgeek/platform-factory](https://github.com/thecloudgeek/platform-factory).
+[https://github.com/platform-factory/platform-factory-concept](https://github.com/platform-factory/platform-factory-concept).
 
 Platform Factory was designed and written by **Ronak Patel**
 ([thecloudgeek LLC](https://github.com/thecloudgeek)). Licensed Apache-2.0 —
