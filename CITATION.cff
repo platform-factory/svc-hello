@@ -7,6 +7,7 @@ authors:
   - family-names: Patel
     given-names: Ronak
     affiliation: thecloudgeek LLC
+    orcid: "https://orcid.org/0009-0002-3753-2193"
 repository-code: "https://github.com/platform-factory/svc-hello"
 url: "https://github.com/platform-factory/platform-factory-concept"
 license: Apache-2.0
