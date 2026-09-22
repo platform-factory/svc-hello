@@ -438,23 +438,27 @@ and a reader should be able to see what will be applied by reading the files.
 
 ## Status
 
-**Status:** built in M2 and **running as of 2026-09-16**. The image is pushed
-by hand. The manifest pins `:3870e4c`, the commit the service code was authored
+**Status:** built in M2 and last run on 2026-09-17. The image is pushed by
+hand. The manifest pins `:3870e4c`, the commit the service code was authored
 in — but no image could be built at all until the Dockerfile fix in `8225853`,
-so the image that is actually running was built from a later tree and tagged
-with that earlier sha. Re-pinning it is a follow-up. The
-service is deployed in the `svc-hello` namespace with its Cloud SQL instance
-`svc-hello-main`, reachable with no password, and C-07(a) is recorded above.
+so the image that actually ran was built from a later tree and tagged with that
+earlier sha. Re-pinning it is a follow-up. The service ran in the `svc-hello`
+namespace against its Cloud SQL instance `svc-hello-main`, reachable with no
+password, and C-07(a) is recorded above. The cluster was destroyed at the end
+of 2026-09-17 and the instance is parked (`activationPolicy: NEVER`); nothing
+has run since.
 
-Two things about this repo are not settled. The `Database` claim still needs
-one manual `gcloud sql users create` per database while
-provider-upjet-gcp #1000 is open, so the paved road is not hands-off here yet.
-And **C-07(c) has not been run** — the claim has never been deleted and
-re-added, so "delete the claim, the database survives, re-adding adopts it
-back" is still an assertion in this repo rather than a result.
+One more thing is not settled: the `Database` claim still needs one manual
+`gcloud sql users create` per new database while provider-upjet-gcp #1000 is
+open, so the paved road is not hands-off here yet. Re-adding a claim to an
+instance that already exists does not need it — the user is adopted. C-07(c)
+ran on 2026-09-17 and held; see *(c) Delete the claim, the database survives*
+above.
 
 The System that owns this service was moved from the `payments` team to
-`checkout` on 2026-09-16 as the C-06 test. Nothing in this repo changed for
-that, which is the point — the namespace, the registry repository, the image
-paths and this service's own identity all belong to the System, not to the
-team.
+`checkout` on 2026-09-16 as the C-06 test, and back to `payments` on 2026-09-17
+in the clean re-run (`systems` PR #4, commit `1df1030`).
+`systems/tenants/svc-hello.yaml` is always the live answer. Nothing in this
+repo changed for either move, which is the point — the namespace, the registry
+repository, the image paths and this service's own identity all belong to the
+System, not to the team.
