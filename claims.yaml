@@ -1,0 +1,39 @@
+# svc-hello's databases, as the team asks for them (ADR-0017 §5).
+#
+# This is the whole developer-facing surface of a Cloud SQL Postgres instance:
+# five fields per database, none of which names a Google Cloud resource. The
+# platform's charts/claims, rendered by the platform's own Argo CD Application
+# (svc-hello-claims), turns each entry into a private-IP instance with IAM
+# login, the database `app`, the IAM user for this System's Google service
+# account, and the Job that grants it privileges. This file cannot choose the
+# chart, its version, or anything the schema does not list.
+#
+# It lives at the repo ROOT, beside k8s/, not inside it. k8s/ is applied as
+# plain manifests, and this is not one: it is values the platform reads.
+#
+# What the names decide:
+#   System svc-hello + claim main
+#     -> Cloud SQL instance   svc-hello-main
+#     -> connection name      platform-factory-ref:us-central1:svc-hello-main
+#     -> database             app
+#     -> IAM database user    svc-hello@platform-factory-ref.iam
+#   k8s/deployment.yaml uses the connection name and the user.
+#
+# A claim's name has no hyphen: whatever follows the last hyphen of an
+# instance name is the claim, so two Systems can never produce the same
+# instance name.
+#
+# During M2b, k8s/database.yaml (the Crossplane form of this same claim) stays
+# too, so a rollback to Crossplane still has one to read (ADR-0017 §12). The
+# new engine's Application skips that file.
+databases:
+  main:
+    engine: POSTGRES_16
+    region: us-central1
+    # S maps to db-f1-micro. Size L needs `tier: critical` here AND a critical
+    # System, which the platform approves in the systems repo.
+    size: S
+    # Both have defaults (standard, true); written out because a reference
+    # implementation should show what it relies on.
+    tier: standard
+    backups: true

@@ -1,16 +1,26 @@
 # Pull-request checks for svc-hello.
 #
-# Three jobs, in increasing order of how much can go wrong outside this repo:
+# Three jobs:
 #
-#   yaml   — every file under k8s/ parses. Hard gate; needs nothing external.
-#   go     — the service vets and builds. Hard gate; needs nothing external.
-#   claim  — k8s/database.yaml is valid against the platform's XRDs.
-#            BEST-EFFORT, and honest about it: the XRDs live in another repo
-#            (platform-factory/platform-config), so this job needs a token that
-#            can read it. Without one it says so and passes. It is advisory —
-#            the real gate is the API server at admission time (ADR-0014's
-#            "schema denies first"), and this job exists to move that message
-#            from a failed Argo sync to a red check on the PR.
+#   yaml    — every file under k8s/ parses. Needs nothing external.
+#   go      — the service vets and builds. Needs nothing external.
+#   claims  — claims.yaml renders against the platform's own charts, the way
+#             the platform's Argo CD Application will render it (ADR-0017 §6:
+#             "`helm template` against the platform's chart in the service
+#             repo's PR check"). It first proves it can fail: every claim in
+#             .github/checks/must-fail.yaml must be refused, for the reason it
+#             names (ADR-0019 §4). It needs NO token: platform-config and
+#             systems are public repositories.
+#
+# All three are advisory for now: no ruleset in this org requires a passing
+# check yet (ADR-0018 §7), so a red X shows a mistake without blocking a
+# merge. The real gate is the platform's render at Argo CD, which no merge can
+# skip; this job moves its refusal from a failed sync to the pull request.
+#
+# This replaces a Crossplane-era `claim` job that checked k8s/database.yaml
+# against the XRDs only when a PLATFORM_CONFIG_TOKEN secret was set. None ever
+# was, so in all 23 of its runs it skipped and reported success (svc-hello#14;
+# the M2 build log's post-close addendum of 2026-09-23).
 name: validate
 
 on:
@@ -86,74 +96,43 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
 
-  claim:
-    name: database claim against the platform XRDs (best-effort)
+  claims:
+    name: claims.yaml against the platform's charts
     runs-on: ubuntu-latest
-    # Advisory. A red X here should make someone look; it should not stop a
-    # change to main.go from merging because a cross-repo token expired.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
           path: svc-hello
 
-      - name: Check for a token that can read platform-config
-        id: token
-        env:
-          PLATFORM_CONFIG_TOKEN: ${{ secrets.PLATFORM_CONFIG_TOKEN }}
-        run: |
-          if [ -n "$PLATFORM_CONFIG_TOKEN" ]; then
-            echo "have_token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have_token=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::secret PLATFORM_CONFIG_TOKEN is not set, so the XRDs cannot be fetched; skipping schema validation. Admission on the cluster is still the real gate."
-          fi
-
-      - name: Fetch the XRDs from platform-config
-        if: steps.token.outputs.have_token == 'true'
-        uses: actions/checkout@v4
+      # The charts and the environment's facts. Until the M2b branch merges,
+      # they live on it; the platform-config PR that merges the branch also
+      # flips this ref to main (ADR-0017 §12).
+      - uses: actions/checkout@v4
         with:
           repository: platform-factory/platform-config
-          ref: main
+          ref: m2b-config-connector
           path: platform-config
-          token: ${{ secrets.PLATFORM_CONFIG_TOKEN }}
-          # Only the XRDs are needed; the vendored Helm charts in that repo are
-          # tens of megabytes.
-          sparse-checkout: crossplane/compositions
-          sparse-checkout-cone-mode: false
 
-      - name: Install the crossplane CLI
-        if: steps.token.outputs.have_token == 'true'
+      # This service's tenant file and the retired list.
+      - uses: actions/checkout@v4
+        with:
+          repository: platform-factory/systems
+          ref: main
+          path: systems
+
+      - name: Install Helm 3.19.4, the version Argo CD v3.4.6 bundles
         env:
-          # Pinned to the 2.3 line, matching the Crossplane 2.3.5 running on
-          # the cluster, so the CLI and the API server agree about what a
-          # v2 XRD means. v2.3.4 is the newest 2.3 CLI release (GitHub
-          # releases on crossplane/cli, read 2026-09-16) and the binary is
-          # published at this URL (HTTP 200, same date).
-          CLI_VERSION: v2.3.4
+          HELM_VERSION: v3.19.4
+          # From https://get.helm.sh/helm-v3.19.4-linux-amd64.tar.gz.sha256sum
+          HELM_SHA256: 759c656fbd9c11e6a47784ecbeac6ad1eb16a9e76d202e51163ab78504848862
         run: |
-          curl -fsSL -o crossplane \
-            "https://releases.crossplane.io/stable/${CLI_VERSION}/bin/linux_amd64/crank"
-          chmod +x crossplane
-          sudo mv crossplane /usr/local/bin/crossplane
-          crossplane version --client
+          curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tar.gz" | sha256sum -c -
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+          helm version --short
 
-      - name: Validate the Database claim against the XRD
-        if: steps.token.outputs.have_token == 'true'
+      - name: Render claims.yaml the way the platform will
         run: |
-          # Usage is `crossplane resource validate <extensions> <resources>`
-          # (CLI v2.3 command reference, read 2026-09-16): extensions are the
-          # schema sources, resources are the manifests to check.
-          #
-          # Only database.yaml is passed, deliberately. deployment.yaml and
-          # service.yaml are built-in Kubernetes kinds, whose schemas the CLI
-          # would go and fetch; the XRD is the schema this repo can actually
-          # get wrong, because it is the one written by the platform team
-          # rather than by Kubernetes.
-          #
-          # --error-on-missing-schemas is NOT set: this job is advisory, and a
-          # schema the CLI could not resolve is a gap in the check, not a
-          # defect in the claim.
-          crossplane resource validate \
-            platform-config/crossplane/compositions \
-            svc-hello/k8s/database.yaml
+          python3 svc-hello/.github/scripts/check_claims.py \
+            --platform-config platform-config --systems systems
