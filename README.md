@@ -363,8 +363,11 @@ crossplane resource validate <xrd.yaml> docs/c07-denials/
 prefixed `[x] schema validation error …` and `[x] CEL validation error …`
 (crossplane v2.5.0).
 
-The Argo CD surface was run on 2026-09-17 by merging `wrong-region.yaml` into
-`k8s/` on `main`, deliberately skipping CI (PR #5, reverted by #6). The
+The Argo CD surface was run on 2026-09-17 by adding the `wrong-region.yaml`
+claim to `k8s/` as `k8s/denied-region.yaml` and merging without waiting for CI
+(PR #5, reverted by #6). CI would not have caught it: the claim check was
+skipping, and it read only `k8s/database.yaml` (the M2 build log's post-close
+addendum of 2026-09-23). The
 Application went `OutOfSync` while staying `Healthy`, the claim showed
 `SyncFailed`, the sync kept retrying, and the running service was untouched:
 
@@ -418,6 +421,26 @@ patch --no-deletion-protection` — after which the provider deleted it. Both
 locks held until someone deliberately removed them, which is the property
 ADR-0015 was after, arrived at from the wrong direction.
 
+## Who approves changes here
+
+[ADR-0001](https://github.com/platform-factory/platform-factory-concept/blob/main/docs/adr/0001-repo-boundary-is-approval-boundary.md)
+says the owning team approves a service repo.
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names `@platform-factory/platform`
+instead, on purpose. The owning team is a Google Group, named once, by team,
+in this service's tenant file, `systems/tenants/svc-hello.yaml`
+([ADR-0012 §3](https://github.com/platform-factory/platform-factory-concept/blob/main/docs/adr/0012-system-is-the-unit-team-is-a-field.md):
+"a second file would be a second binding point"), and CODEOWNERS can name
+only GitHub users and teams. A GitHub team per tenant team would be a second
+place ownership is recorded, and a team move would have to edit it too.
+
+Nothing is enforced either way yet. Every repo in this org requires zero
+approvals, because GitHub does not let a pull request's author approve it and
+one person authors every pull request here
+([M1 log, surprise 2](https://github.com/platform-factory/platform-factory-concept/blob/main/docs/build-log/m1-spine.md)).
+How a team's own approval gets enforced, and whether CODEOWNERS could be
+generated from the tenant file instead of written by hand, is M3's question
+(claim C-09).
+
 ## What's in this repo
 
 ```
@@ -428,9 +451,14 @@ Makefile                        login / build / push / set-image — the hand-pu
                                 (build still calls `docker build`; see the build section)
 k8s/deployment.yaml             app container + Cloud SQL Auth Proxy native sidecar
 k8s/service.yaml                ClusterIP 80 → 8080
-k8s/database.yaml               the Database claim: main, POSTGRES_16, us-central1, S
-docs/c07-denials/               three claims that must be denied — one per rule kind
-.github/workflows/validate.yml  YAML parse, go vet/build, best-effort XRD check
+claims.yaml                     the database, as values the platform renders (from M2b):
+                                main, POSTGRES_16, us-central1, S
+k8s/database.yaml               the same claim in Crossplane's form, kept through M2b so a
+                                rollback has one; the new engine skips it
+docs/c07-denials/               three claims that must be denied — one per rule kind (M2)
+.github/workflows/validate.yml  YAML parse; go vet/build; claims.yaml rendered against the
+                                platform's charts, with no secret needed
+.github/checks/must-fail.yaml   claims the check must refuse before it trusts itself
 ```
 
 `k8s/` is plain manifests, no Kustomize. Argo CD syncs the directory as it is,

@@ -1,0 +1,19 @@
+# Claims the PR check must refuse, each with the text its refusal must
+# contain. Run before the real claims.yaml is checked: a check that has never
+# been seen to fail is not evidence (ADR-0019 §4). This repo's old claim check
+# passed 23 times without validating anything.
+- name: a claim name with a hyphen
+  claims:
+    databases:
+      api-main: {engine: POSTGRES_16, region: us-central1, size: S}
+  expect: "'api-main' does not match pattern"
+- name: size L in a standard-tier System
+  claims:
+    databases:
+      main: {engine: POSTGRES_16, region: us-central1, size: L, tier: critical}
+  expect: "at '/databases/main/size'"
+- name: a key the form does not have
+  claims:
+    databases:
+      main: {engine: POSTGRES_16, region: us-central1, size: S, ipv4Enabled: true}
+  expect: "additional properties 'ipv4Enabled' not allowed"
