@@ -1,0 +1,17 @@
+# C-28 (b), TEMPORARY: an Argo CD Application in the tenant's k8s/, aimed at
+# the platform's `default` project, with no namespace of its own. The
+# tenant's project leaves out argoproj.io kinds, so the sync must refuse it
+# by kind. Removed by the next PR once the refusal is recorded.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-escape
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/platform-factory/svc-hello
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
