@@ -1,6 +1,7 @@
-# C-28 (b): a claim name containing a hyphen.
+# C-28 (b): size L with tier: critical, in a standard-tier System.
 databases:
-  api-main:
+  main:
     engine: POSTGRES_16
     region: us-central1
-    size: S
+    size: L
+    tier: critical
