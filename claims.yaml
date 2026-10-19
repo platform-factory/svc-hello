@@ -1,6 +1,6 @@
-# C-28 (b2): predicted NOT refused. The claims.yaml sets a real platform
-# value, environment.projectID. The valuesObject outranks it, so the render
-# must be byte-identical to the same claims without it.
+# C-28 (b2): predicted NOT refused. The claims.yaml sets system.tier:
+# critical. The valuesObject outranks it, so the render must be
+# byte-identical to the same claims without it.
 databases:
   main:
     engine: POSTGRES_16
@@ -8,5 +8,5 @@ databases:
     size: S
     tier: standard
     backups: true
-environment:
-  projectID: another-project
+system:
+  tier: critical
