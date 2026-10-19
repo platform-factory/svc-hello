@@ -1,8 +1,6 @@
-# C-28 (b): an unknown key under environment.
+# C-28 (b): a claim name containing a hyphen.
 databases:
-  main:
+  api-main:
     engine: POSTGRES_16
     region: us-central1
     size: S
-environment:
-  sqlFlags: "cloudsql.iam_authentication=off"
