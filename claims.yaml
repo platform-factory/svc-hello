@@ -1,8 +1,7 @@
-# C-28 (b): an oversized request (a size the form does not offer).
+# C-28 (b): the cross-field rule. Size L without tier: critical written out.
 databases:
   main:
     engine: POSTGRES_16
     region: us-central1
-    size: XL
-    tier: standard
+    size: L
     backups: true
