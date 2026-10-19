@@ -1,9 +1,9 @@
-# C-28 (b): an extra key, ipv4Enabled: true (a public IP).
+# C-28 (b): a string crafted to inject YAML. If a template wrote this value
+# unquoted, the newline would start a new key, ipv4Enabled, under settings.
 databases:
   main:
-    engine: POSTGRES_16
+    engine: "POSTGRES_16\n    ipv4Enabled: true"
     region: us-central1
     size: S
     tier: standard
     backups: true
-    ipv4Enabled: true
