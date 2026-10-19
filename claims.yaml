@@ -1,11 +1,12 @@
-# C-28 (b): size L with tier: critical in a standard-tier System, with the
-# claims.yaml also setting system.tier: critical. The platform's valuesObject
-# outranks it, so the System is still standard.
+# C-28 (b2): predicted NOT refused. The claims.yaml sets a real platform
+# value, environment.projectID. The valuesObject outranks it, so the render
+# must be byte-identical to the same claims without it.
 databases:
   main:
     engine: POSTGRES_16
     region: us-central1
-    size: L
-    tier: critical
-system:
-  tier: critical
+    size: S
+    tier: standard
+    backups: true
+environment:
+  projectID: another-project
