@@ -1,7 +1,9 @@
-# C-28 (b): the cross-field rule. Size L without tier: critical written out.
+# C-28 (b): an extra key, ipv4Enabled: true (a public IP).
 databases:
   main:
     engine: POSTGRES_16
     region: us-central1
-    size: L
+    size: S
+    tier: standard
     backups: true
+    ipv4Enabled: true
