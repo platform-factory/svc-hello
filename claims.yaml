@@ -1,14 +1,8 @@
-# C-28 (b): a claim over the per-System claim limit (two).
+# C-28 (b): an unknown key under environment.
 databases:
   main:
     engine: POSTGRES_16
     region: us-central1
     size: S
-  second:
-    engine: POSTGRES_16
-    region: us-central1
-    size: S
-  third:
-    engine: POSTGRES_16
-    region: us-central1
-    size: S
+environment:
+  sqlFlags: "cloudsql.iam_authentication=off"
