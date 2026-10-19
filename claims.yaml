@@ -1,9 +1,14 @@
-# C-28 (b): a string crafted to inject YAML. If a template wrote this value
-# unquoted, the newline would start a new key, ipv4Enabled, under settings.
+# C-28 (b): a claim over the per-System claim limit (two).
 databases:
   main:
-    engine: "POSTGRES_16\n    ipv4Enabled: true"
+    engine: POSTGRES_16
     region: us-central1
     size: S
-    tier: standard
-    backups: true
+  second:
+    engine: POSTGRES_16
+    region: us-central1
+    size: S
+  third:
+    engine: POSTGRES_16
+    region: us-central1
+    size: S
