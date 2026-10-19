@@ -1,8 +1,8 @@
-# C-28 (b): a wrong region.
+# C-28 (b): an oversized request (a size the form does not offer).
 databases:
   main:
     engine: POSTGRES_16
-    region: europe-west1
-    size: S
+    region: us-central1
+    size: XL
     tier: standard
     backups: true
