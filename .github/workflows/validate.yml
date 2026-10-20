@@ -104,13 +104,12 @@ jobs:
         with:
           path: svc-hello
 
-      # The charts and the environment's facts. Until the M2b branch merges,
-      # they live on it; the platform-config PR that merges the branch also
-      # flips this ref to main (ADR-0017 §12).
+      # The charts and the environment's facts, on platform-config main since
+      # the M2b branch merged (ADR-0017 §12).
       - uses: actions/checkout@v4
         with:
           repository: platform-factory/platform-config
-          ref: m2b-config-connector
+          ref: main
           path: platform-config
 
       # This service's tenant file and the retired list.
