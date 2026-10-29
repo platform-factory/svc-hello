@@ -37,12 +37,3 @@ databases:
     # implementation should show what it relies on.
     tier: standard
     backups: true
-  # C-28 (a)'s database: a PR to a usable database, timed, with no command
-  # run by hand. Temporary: its instance is deleted by a person in M2b's
-  # cleanup (ADR-0015 §5). Nothing in k8s/ uses it.
-  second:
-    engine: POSTGRES_16
-    region: us-central1
-    size: S
-    tier: standard
-    backups: true
