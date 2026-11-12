@@ -12,10 +12,13 @@
 # ---------------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------------
-# golang 1.27.1 rather than the 1.23 the plan first assumed: pgx v5.11.0 (the
-# latest v5, verified on GitHub 2026-09-16) declares `go 1.25.0`, so a 1.23
-# toolchain refuses to build it. 1.27.1 is the current release (Docker Hub tag
-# list read 2026-09-16).
+# golang 1.27.1 rather than the 1.23 the plan first assumed: in M2, pgx v5.11.0
+# declared `go 1.25.0`, so a 1.23 toolchain refused to build it, and 1.27.1 was
+# the current release (Docker Hub tag list read 2026-09-16). The image is pinned
+# by its multi-platform index digest (as resolved on 2026-11-11), and the
+# go-test job in .github/workflows/validate.yml runs in the same image at the
+# same digest, so the toolchain that tests a change is the one that builds the
+# image. Change the two together.
 #
 # --platform=$BUILDPLATFORM: the builder stage runs NATIVELY on whatever
 # machine runs the build, and Go cross-compiles for the target below. Without
@@ -23,8 +26,10 @@
 # the amd64 Go toolchain under CPU emulation, and Go's runtime panics inside
 # the net resolver during `go mod tidy` (observed 2026-09-16 on the first M2
 # image build: a goroutine dump from net.(*Resolver).lookupIPAddr, exit 2).
+# The build no longer runs tidy; `go mod download` also resolves names, so the
+# same failure would be expected there (not tried).
 # Cross-compiling is what Go is good at; emulating a compiler is not.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
 # git is needed by the module proxy fallback path; ca-certificates for TLS to
 # proxy.golang.org.
@@ -32,29 +37,33 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
 
-# No Go toolchain is installed on the machine that authored this repo, so go.sum
-# cannot be produced outside a container. `go mod tidy` inside the builder is
-# what resolves and records the dependency graph. GOFLAGS=-mod=mod lets it write
-# go.mod/go.sum in the build context copy (the default -mod=readonly would fail
-# the moment tidy wanted to add a line).
+# go.mod and go.sum are the reviewed inputs, and the image must be built from
+# exactly them. GOFLAGS=-mod=readonly makes the build fail when either is out of
+# step with the code, instead of rewriting them; go.sum is copied by name, so
+# the build fails without it; and `go mod tidy` is not run here. (Until M4 the
+# build copied go.sum as optional and ran tidy, so the checksums that shipped
+# were whatever tidy wrote, not the committed ones.) A stale go.sum fails at
+# `go vet` below with "missing go.sum entry"; a tampered one fails at
+# `go mod download` with a checksum mismatch. CI's go-test job runs
+# `go mod tidy -diff`, so a pull request that leaves either file untidy fails
+# before it merges.
 #
 # TARGETOS/TARGETARCH are set by BuildKit from --platform (linux/amd64 for the
 # GKE node pool, see the Makefile); the binary is built for the target while
 # the toolchain runs on the build host.
 ARG TARGETOS
 ARG TARGETARCH
-ENV GOFLAGS=-mod=mod \
+ENV GOFLAGS=-mod=readonly \
     CGO_ENABLED=0 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64}
 
-# One COPY, not three, because go.sum is optional: `go.su[m]` is a glob, and a
-# glob that matches nothing is only tolerated when some other source in the same
-# COPY matched (go.mod always does). If go.sum is committed, tidy verifies
-# against it; if it is not, tidy writes it. Either way the build works.
-COPY go.mod go.su[m] main.go ./
+# The module files first, in their own layer, so a change to main.go alone
+# reuses the downloaded modules.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 
-RUN go mod tidy
+COPY main.go ./
 
 # vet before build. It is the cheapest static check Go has and it costs a second
 # here instead of a failed deploy later.
