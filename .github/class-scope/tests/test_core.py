@@ -556,6 +556,17 @@ class TestReviewFindings(unittest.TestCase):
         self.assertIsNone(d["records_commit"])
         self.assertEqual(d["near_misses"], {})
 
+    def test_class_file_path_is_chosen(self):
+        # Probe P4 reads a copy outside classes/; svc-hello never passes the
+        # option, so the fixed path stands there.
+        s = Scenario(state(0), state(1))
+        text = s.controls.commits[s.controls.branches["main"]]["files"]["classes/go-module-bump.yaml"]
+        s.controls.commit({"probe/p4-class.yaml": text}, branch="main")
+        d = class_scope.decide(s.event, s.deps(), class_file_path="probe/p4-class.yaml")
+        self.assertEqual(d["verdict"], "pass")
+        d = class_scope.decide(s.event, s.deps(), class_file_path="probe/absent.yaml")
+        self.assertEqual(d["verdict"], "inconclusive")
+
     def test_synchronize_always_deletes_both_head_bound_labels(self):
         s = Scenario(state(0), state(1), action="synchronize", payload_labels=[])
         s.run()

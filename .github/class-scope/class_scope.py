@@ -1643,6 +1643,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--class-file", help="read the class file from this path instead of the controls repo (local runs)")
     ap.add_argument("--records-branch", default=os.environ.get("RECORDS_BRANCH") or RECORDS_BRANCH,
                     help="the controls repo's records branch (probe P4: records-p4)")
+    ap.add_argument("--class-file-path", default=os.environ.get("CLASS_FILE_PATH") or CLASS_FILE_PATH,
+                    help="the class file's path on the controls repo's main (probe P4: probe/p4-class.yaml)")
     args = ap.parse_args(argv)
 
     with open(args.event) as f:
@@ -1662,7 +1664,7 @@ def main(argv: list[str] | None = None) -> int:
     labels = [l["name"] for l in payload["pull_request"].get("labels", [])]
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     d = run(event, deps, os.environ.get("M4_FORCE_INCONCLUSIVE", ""), labels, args.controls_repo,
-            records_branch=args.records_branch, server=server)
+            class_file_path=args.class_file_path, records_branch=args.records_branch, server=server)
     d["verifier_version"] = verifier_version()
     d["run"] = {k: os.environ.get(k) for k in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA")}
 

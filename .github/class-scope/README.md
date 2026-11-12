@@ -237,7 +237,10 @@ read; `svc-hello` holds none. The checkout keeps no credential
 - Records: `runs/*.json` (`pr_number`, `queue_position`, `repo`, `branch`,
   and the controls run fields for the packet) and the names of
   `seeds/*.json`, from the controls repo's `records` branch (`--records-branch`
-  or `RECORDS_BRANCH` names another; probe P4 uses `records-p4`). A run
+  or `RECORDS_BRANCH` names another; probe P4 uses `records-p4`). The class
+  file's path on the controls repo's `main` is fixed; `--class-file-path` or
+  `CLASS_FILE_PATH` names another only on the throwaway repository, where
+  probe P4 reads a copy outside `classes/`. A run
   record for another repository, or whose pull request's head branch is not
   its `branch`, is not a queue item here. Each run-record pull request is read
   by number, whatever its base; one retargeted away from `main` counts as
