@@ -1,0 +1,107 @@
+# class-scope: the second lock on the Go-module bump class (ADR-0024 §5, §6).
+#
+# Why pull_request_target: on `pull_request` GitHub runs the workflow file
+# from the pull request itself, so a pull request could edit the check that
+# judges it (edge-config#19, ADR-0023 §2). On `pull_request_target` the
+# workflow, and an actions/checkout with no `ref`, come from the default
+# branch. The job reads the pull request's go.mod and go.sum through the API
+# as data and never checks out or runs pull request code; that is the rule
+# that makes this event safe to use.
+#
+# What it decides, in .github/class-scope/README.md: one on-class change that
+# equals the queue's next item recomputed from main's tip, byte for byte, or a
+# listed human's clearance. Three outcomes, encoded in step names:
+#   decide                 runs the verifier; exits 0 whenever it reached a
+#                          verdict (pass, fail or inconclusive)
+#   verdict-inconclusive   fails iff the verdict is inconclusive
+#   verdict-fail           fails iff the verdict is fail
+# A failure in any other step means no verdict, which readers treat as an
+# inconclusive to re-run. The verdict is also in the artifact
+# `class-scope-verdict` (verdict.json) and in the job summary (the packet).
+#
+# No job-level `if:` and no path filter: a skipped job reports success, and a
+# path-filtered required check stays pending. Every trigger recomputes the
+# whole verdict, label events included (the default types leave them out).
+name: class-scope
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# contents: read       the verifier's own checkout, and the compare, tree,
+#                      blob and activity reads of this repository
+# pull-requests: write add `needs-human` on an inconclusive and remove
+#                      `human-cleared` / `escape:revert` on synchronize; it
+#                      also covers reading the pull request's issue events
+# Everything else is none. The controls repository and the module proxy are
+# public and read with no extra scope.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  class-scope:
+    name: class-scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: check out the verifier from the default branch
+        # No `ref`: on pull_request_target this is the default branch's last
+        # commit, never the pull request. Only the verifier's directory, and
+        # no credential is left in the checkout.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/class-scope
+          sparse-checkout-cone-mode: false
+
+      - name: decide
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # The C-20 switch: `<module>@<version>` forces an inconclusive for
+          # that queue item. A repository variable, which the agent App
+          # cannot set; empty or unset is off.
+          M4_FORCE_INCONCLUSIVE: ${{ vars.M4_FORCE_INCONCLUSIVE }}
+        run: >-
+          python3 -I .github/class-scope/class_scope.py
+          --event "$GITHUB_EVENT_PATH"
+          --repo "$GITHUB_REPOSITORY"
+          --out-dir "$RUNNER_TEMP/class-scope"
+
+      - name: upload verdict
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: class-scope-verdict
+          path: ${{ runner.temp }}/class-scope/verdict.json
+          if-no-files-found: error
+          # A re-run attempt replaces the earlier attempt's verdict.
+          overwrite: true
+          retention-days: 90
+
+      - name: verdict-inconclusive
+        env:
+          VERDICT: ${{ steps.decide.outputs.verdict }}
+          REASON_CLASS: ${{ steps.decide.outputs.reason_class }}
+        run: |
+          case "$VERDICT" in
+            inconclusive)
+              echo "::error title=class-scope::inconclusive ($REASON_CLASS); see the job summary"
+              exit 1 ;;
+            pass|fail) ;;
+            *)
+              # Not reachable when decide succeeded. An unknown value is read
+              # as inconclusive, the outcome that never closes a pull request.
+              echo "::error title=class-scope::no verdict"
+              exit 1 ;;
+          esac
+
+      - name: verdict-fail
+        env:
+          VERDICT: ${{ steps.decide.outputs.verdict }}
+        run: |
+          if [ "$VERDICT" = "fail" ]; then
+            echo "::error title=class-scope::off-class; see the job summary"
+            exit 1
+          fi

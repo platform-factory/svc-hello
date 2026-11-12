@@ -1,0 +1,90 @@
+{
+  "sha": "d0f70de3c1b6c60df45e5ce693d3e40a8cebaf52",
+  "truncated": false,
+  "tree": [
+    {
+      "path": ".dockerignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c43135021c109a86ae1ad1a180baf7aa1f1e2cab"
+    },
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "108727c340aaf180aeadcc7de84023a60bb407eb"
+    },
+    {
+      "path": "CITATION.cff",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea0d4cc0e1af4cfd6d9167df6cf2ffd233dfad89"
+    },
+    {
+      "path": "Dockerfile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5f9ec88fa54875b90ee490b073e44a134b64fa5a"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3ebf3f718839664789a2428b43def894c1c50ea2"
+    },
+    {
+      "path": "Makefile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcfe722ab52dd3a035903f8865796f4472434b87"
+    },
+    {
+      "path": "NOTICE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "773c7ee3b2c5583c5ad45649faf7eaa8e7e921bc"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "70320b739e5d9cf287fbe7d14ef7e0148fcdf7cb"
+    },
+    {
+      "path": "claims.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f36121b8bd3dbcd12a583480c6c462caab4c6165"
+    },
+    {
+      "path": "docs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c2dcd4d3ab07c5e0875813e49258c9297529161b"
+    },
+    {
+      "path": "go.mod",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "04ee52c13d707aae8f3a8bd7a919000329abddb1"
+    },
+    {
+      "path": "go.sum",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3f716dd12523b6194234f0bb27a6cf980de0846a"
+    },
+    {
+      "path": "k8s",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8eb6cc90b6a7361e56a66f83f7297c15abd4c648"
+    },
+    {
+      "path": "main.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dcabc4e1ac3c22cc2df1f81f5fe8b4681c273dd9"
+    }
+  ]
+}

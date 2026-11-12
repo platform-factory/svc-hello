@@ -1,0 +1,32 @@
+[
+  {
+    "id": 34554271148,
+    "event": "review_requested",
+    "created_at": "2026-10-29T06:19:44Z",
+    "actor": {
+      "login": "maintainer-account",
+      "type": "User"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "id": 34554367647,
+    "event": "merged",
+    "created_at": "2026-10-29T06:21:16Z",
+    "actor": {
+      "login": "maintainer-account",
+      "type": "User"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "id": 34554367771,
+    "event": "closed",
+    "created_at": "2026-10-29T06:21:16Z",
+    "actor": {
+      "login": "maintainer-account",
+      "type": "User"
+    },
+    "performed_via_github_app": null
+  }
+]

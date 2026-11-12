@@ -1,0 +1,135 @@
+{
+  "image": "golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414",
+  "states": [
+    {
+      "label": "00-baseline",
+      "go.mod": "0c7ce032b32815cd18ffe893782330a5e508c138e6e92be779fae920a03c910e",
+      "go.sum": "a5e7a8db07eba28dbde48bf9a54c4e9084a5a95ded581c0ff44c08b74e3dfe69"
+    },
+    {
+      "label": "01-golang.org_x_sync@v0.18.0",
+      "go.mod": "cf5735a782c0e12f231eacf833693ff48ab54f96510a596a9c6d5ccb6b220f9e",
+      "go.sum": "c226c6fc847825dfa2aa9cabf798e90960addb6bfd4a9ae72842a3db0e0b1d32"
+    },
+    {
+      "label": "02-golang.org_x_sync@v0.19.0",
+      "go.mod": "3c8a142fdb149fb4e76d838c3da59583fecd4bcdc9a90b6fd44a1644cc1878a9",
+      "go.sum": "29b31dc46bebed4ef3e35a9d902e620933394cd896f49f47509a15234a5a0079"
+    },
+    {
+      "label": "03-golang.org_x_sync@v0.20.0",
+      "go.mod": "85d6a547ea871f6225c3981f2d30c7a37707d3d8de665699918b29aca03e2c22",
+      "go.sum": "af25d89498278f2d278d188d9b655a8e95976837cfb72e334f76fd305ea1cd40"
+    },
+    {
+      "label": "04-golang.org_x_sync@v0.21.0",
+      "go.mod": "10316c81488347aef7467a29084849b09c4244e3ee567f3c656bf6dc8560c37c",
+      "go.sum": "6b8634e05e243f6f614ca7fbd2f490d5140f6f09b6c8a1288b0573ca2e64d886"
+    },
+    {
+      "label": "05-golang.org_x_sync@v0.22.0",
+      "go.mod": "0e61cc707f2a55d726c72929622d0ae0644984a6e0b376404c0a83dc647f58f9",
+      "go.sum": "d50cb211d9ac0b0710d1d907aa80f28b81f1ca8683bcadea329faf1e74eba115"
+    },
+    {
+      "label": "06-golang.org_x_sync@v0.23.0",
+      "go.mod": "161401e35cbdae9a591e7eef8486a18c26e30844346c2d4c556a5e969e085d9c",
+      "go.sum": "342e32148ae6bed1eb97fe3e268c42cd9a7db012e797ae0190ffbcd3ae519a4a"
+    },
+    {
+      "label": "07-golang.org_x_sync@v0.24.0",
+      "go.mod": "23465d12cdd14c3771687845ee8f1b9e0c20b3bc3d3129a65f61eca671d79417",
+      "go.sum": "350484766fdaab7aeebf499d10082191356e1e1ad38d01fd10802778204b85d4"
+    },
+    {
+      "label": "08-golang.org_x_sync@v0.25.0",
+      "go.mod": "83da25d9a6b5c5a597b9c874fafe1e11d0a985ba6d7c5f7b91b313da34694d3d",
+      "go.sum": "5224876f17fe7890c0fbf281dee22f824951706311558cd9369843e740a15cc3"
+    },
+    {
+      "label": "09-golang.org_x_text@v0.30.0",
+      "go.mod": "57ca1ca8a55bb974940764bd4a747304c895079548df690cb2d458d2addede7d",
+      "go.sum": "74e30c0345f44c1ce0faf3a6768414487039ef53f139ed461c5dc755fae31ef0"
+    },
+    {
+      "label": "10-golang.org_x_text@v0.31.0",
+      "go.mod": "6d7935f14be73052c38c03d84ddd2198060a2544f989b5504a61cb747c937091",
+      "go.sum": "5d4207c6722afcb21ae31c858a4b68abed4e020b507c2e8b1c33deb42551cf4d"
+    },
+    {
+      "label": "11-golang.org_x_text@v0.32.0",
+      "go.mod": "1adb09fea1b90f197acbb7255ae926d819aa4fd2a1b4efca3245b5116d01529a",
+      "go.sum": "30fd094448edcaeb41778c76d741166e0e4cd895bdc4376fbd40af26888d8037"
+    },
+    {
+      "label": "12-golang.org_x_text@v0.33.0",
+      "go.mod": "3669a0869b8ae9874e820a978bf6cf5271b8d7ab2825340e51b2ae86f5db8e97",
+      "go.sum": "1679329d7db450eeab1d7082f7b5d8758f67be408ad991f7032ac34706b37add"
+    },
+    {
+      "label": "13-golang.org_x_text@v0.34.0",
+      "go.mod": "1a6d41a11312c891800425bb0898dae371009fb419aa0738d9061e56073540ff",
+      "go.sum": "4d0543ac0c151e151ee30af7833388a21889fa013d2930b5d6813eecfdb2e018"
+    },
+    {
+      "label": "14-golang.org_x_text@v0.35.0",
+      "go.mod": "c0bb8ad152d02610f8d6066751ef286df8ccfc71f8cb5378498a4e0a32f70e3a",
+      "go.sum": "6bb4ee02fadbdcb7fa26fc59738b9f3d284b3f9d091db51cdfb0ee0616edf78d"
+    },
+    {
+      "label": "15-golang.org_x_text@v0.36.0",
+      "go.mod": "5865638977ec738beedf021c481dc8cea098ae3388c23fd306e5c92bb0e88844",
+      "go.sum": "2669718ebe150fdde514660cad7b5b2f78cd3dfa37ad5b144b534b368a8d2bb2"
+    },
+    {
+      "label": "16-golang.org_x_text@v0.37.0",
+      "go.mod": "c64c922cf2782fe8ba168c57ece29d48f785092ba2b1cc01b7905ebdd414908d",
+      "go.sum": "76192584e8c7af8346b311846db8fa1779785eed14c2d85fdc38fe4cc695b5db"
+    },
+    {
+      "label": "17-golang.org_x_text@v0.38.0",
+      "go.mod": "157f14457f36d404f2fc51532205be8c9cd69b7888eb73791bf3f5262fed72ac",
+      "go.sum": "286d451a57ad58779d71db30d6316b9770dcde947558df27d34c933646f8fa75"
+    },
+    {
+      "label": "18-golang.org_x_text@v0.39.0",
+      "go.mod": "8d52811051692eb992b8e1c32be60382ac3756c665bfcddcca8e2d27b615062e",
+      "go.sum": "0d8701a5c0b650edb900dbfc0356dc5608a1812b151bb3f8a3f0eddc6ee5e3a5"
+    },
+    {
+      "label": "19-golang.org_x_text@v0.40.0",
+      "go.mod": "3c0b594e78695aa030e7750cbb56096a44bd68aab77db9540b06c8e3d7391300",
+      "go.sum": "50a40900fd79d9a77a6d3863262d166f784255f18483f7cdd0019d68137b398a"
+    },
+    {
+      "label": "20-golang.org_x_text@v0.41.0",
+      "go.mod": "b9ed5c944b3aedaab45c602203895cd9e8188e666d3e8d67c5ab6451e715a904",
+      "go.sum": "95f6415e27958ba3fcd64826d09ef2f01213b0524816a81fed30344f924f33f5"
+    },
+    {
+      "label": "21-golang.org_x_text@v0.42.0",
+      "go.mod": "c763f93ec3e6494ce3ec09aad03c1775f88c3cc6717da2370cceb7f101d5b1a9",
+      "go.sum": "f3949031419c8eb7e2404daaf7be2cf2d08919456a4260cc7917043098d2916a"
+    },
+    {
+      "label": "22-golang.org_x_text@v0.43.0",
+      "go.mod": "08b0bb60c16266206eb75a01737babea0f5b2fff0e112c8ed15e12d5f7b72c11",
+      "go.sum": "3fa47a75af7fc6a3d832977d00912afff51274bb8def83b3f1d30a940dafa360"
+    },
+    {
+      "label": "23-golang.org_x_text@v0.44.0",
+      "go.mod": "9339fe41a57acf867c896ba6ffd1da19846b2077ab0770c124e0005728aaeccd",
+      "go.sum": "e1338a91f791e672e88e18297107da057384a2cab312c1c5219b8d3e4171f579"
+    },
+    {
+      "label": "24-github.com_jackc_pgx_v5@v5.12.0",
+      "go.mod": "977f780b40cdfe1d6e9d02ab09259bc181a15b9cdb9782fb4aad90b11662e14e",
+      "go.sum": "5b8ef6a2fdf03bc8ba4c8e5d8dde176e2e940ca622642589c197c30de7f0c0b8"
+    },
+    {
+      "label": "25-github.com_jackc_pgx_v5@v5.13.0",
+      "go.mod": "412683faed48ebe9d724fd17722e00a10591f077826efb76d3b3fec73789630c",
+      "go.sum": "a9bca4c4e0f943066eb7b7f31b112a68c30d63b61e2b18bca10397ad52f459d4"
+    }
+  ]
+}
