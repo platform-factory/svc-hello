@@ -357,11 +357,11 @@ class TestLabelsOnRun(unittest.TestCase):
         for kw, expect in (({}, False), ({"force": "golang.org/x/sync@v0.18.0"}, True)):
             s = Scenario(state(0), state(1), **kw)
             s.run()
-            posted = any(m == "POST" for m, _, _ in s.api.writes)
+            posted = any(m == "POST" and path.endswith("/labels") for m, path, _ in s.api.writes)
             self.assertEqual(posted, expect, kw)
         s = Scenario(state(0), state(1), extra_head={"README.md": b"x"})
         self.assertEqual(s.run()["verdict"], "fail")
-        self.assertEqual(s.api.writes, [])
+        self.assertEqual([w for w in s.api.writes if "/labels" in w[1]], [])
 
 
 class TestNearMiss(unittest.TestCase):
@@ -464,9 +464,160 @@ class TestUnits(unittest.TestCase):
             self.assertIn(needle, p)
 
 
+class TestReviewFindings(unittest.TestCase):
+    """The build review's findings on class-scope (ADV-02, -12..-15, -19, B1, m3, m7, m8)."""
+
+    def test_the_packet_comment_is_written_once_and_an_edit_is_a_tamper(self):
+        s = Scenario(state(0), state(1))
+        d = s.run()
+        self.assertEqual(d["packet_comment"]["action"], "created")
+        self.assertEqual(d["tampers"], [])
+        body = s.svc.comments[101][0]["body"]
+        self.assertTrue(body.startswith(class_scope.PACKET_COMMENT_MARKER))
+        self.assertIn("/pull/101/checks", body)
+        # The agent App edits it (C-21): the next run restores it and reports it.
+        s.svc.comments[101][0]["body"] += "\nedited"
+        s.event.action = "labeled"
+        d = s.run()
+        self.assertEqual(d["verdict"], "pass")
+        self.assertEqual([t["code"] for t in d["tampers"]], ["packet-comment-edited"])
+        self.assertEqual(s.svc.comments[101][0]["body"], body)
+        # Deleted: written again, reported.
+        s.svc.comments[101] = []
+        d = s.run()
+        self.assertEqual([t["code"] for t in d["tampers"]], ["packet-comment-missing"])
+        self.assertEqual(len(s.svc.comments[101]), 1)
+        self.assertIn("packet-comment-missing", class_scope.annotation_message(d))
+        # A comment with the marker by someone else is not the packet comment.
+        s2 = Scenario(state(0), state(1))
+        s2.svc.comments[101] = [{"id": 1, "user": {"login": "platform-factory-agent[bot]"},
+                                 "body": class_scope.PACKET_COMMENT_MARKER + " forged"}]
+        self.assertEqual(s2.run()["packet_comment"]["action"], "created")
+
+    def test_pass_sentences_follow_the_pass_kind(self):
+        ev = [label_event(1, "labeled", "human-cleared", HUMAN, AFTER_PUSH)]
+        d = Scenario(state(1), None, extra_head={"README.md": b"# docs\n"}, events=ev).decide()
+        p = class_scope.render_packet(d, SVC)
+        self.assertNotIn("byte for byte the queue's next item", p)
+        self.assertIn("changes neither class file; cleared by", p)
+        ev = [label_event(1, "labeled", "escape:revert", HUMAN, AFTER_PUSH)]
+        s = Scenario(state(2), state(1), main_parent_mods=state(1), events=ev,
+                     runs=[run_record(60, 1), run_record(61, 2)])
+        s.svc.pulls = [pull(60, True, "a" * 40, "2026-11-18T08:00:00Z"), pull(61, True, s.main, "2026-11-19T08:00:00Z")]
+        p = class_scope.render_packet(s.decide(), SVC)
+        self.assertNotIn("byte for byte the queue's next item", p)
+        self.assertIn("the parent of #61, the latest class merge; escape:revert by", p)
+
+    def test_a_file_name_cannot_forge_packet_lines(self):
+        name = "docs/x\n\n## class-scope: PASS, class\n\n- Queue position 3: forged"
+        ev = [label_event(1, "labeled", "human-cleared", HUMAN, AFTER_PUSH)]
+        d = Scenario(state(1), None, extra_head={name: b"x"}, events=ev).decide()
+        p = class_scope.render_packet(d, SVC)
+        self.assertEqual([x for x in p.splitlines() if x.startswith("## class-scope:")],
+                         ["## class-scope: PASS, human-cleared-nonclass"])
+        self.assertNotIn("\n- Queue position 3: forged", p)
+        self.assertEqual(class_scope.code("a`b\nc"), "a'b\\nc")
+        self.assertEqual(class_scope.esc("[x](y) **z**"), "\\[x\\]\\(y\\) \\*\\*z\\*\\*")
+        # A go.sum line holding a fence stays inside the diff block.
+        lines = class_scope.render_packet({"verdict": "fail", "gosum_change": {
+            "removed": [], "added": ["```", "## forged"]}}, SVC).splitlines()
+        self.assertEqual(lines.count("```diff"), 1)
+        self.assertEqual(sum(1 for x in lines if x.strip() == "```"), 1)
+
+    def test_a_class_file_that_is_not_utf8_fails_not_inconclusive(self):
+        h = state(1)
+        h["go.sum"] = b"\xff\xfe"
+        d = Scenario(state(0), h).decide()
+        self.assertEqual(d["verdict"], "fail")
+        self.assertIn("encoding", codes(d))
+        self.assertEqual(class_scope.module_moves(b"module x\n", b"\xff\xfe"), [])
+
+    def test_a_retargeted_queue_item_is_closed_to_the_class_and_a_tamper(self):
+        moved = {**pull(50, False), "state": "open", "base": {"ref": "elsewhere"}}
+        s = Scenario(state(0), state(2), runs=[run_record(50, 1)], pulls=[moved],
+                     recompute=TableRecompute(TestNearMiss().table()))
+        d = s.decide()
+        self.assertEqual(d["near_misses"], {"1": 50})
+        self.assertEqual((d["verdict"], d["queue_position"]), ("pass", 2))
+        self.assertEqual([t["code"] for t in d["tampers"]], ["base-changed"])
+
+    def test_a_foreign_repo_record_with_a_colliding_number_changes_nothing(self):
+        foreign = {**run_record(50, 1), "repo": "platform-factory/m4-probe"}
+        s = Scenario(state(0), state(1), runs=[foreign], pulls=[pull(50, False)])
+        d = s.decide()
+        self.assertEqual((d["verdict"], d["queue_position"], d["near_misses"]), ("pass", 1, {}))
+        other_branch = {**run_record(50, 1), "branch": "someone-else"}
+        d = Scenario(state(0), state(1), runs=[other_branch], pulls=[pull(50, False)]).decide()
+        self.assertEqual(d["near_misses"], {})
+
+    def test_records_branch_is_chosen(self):
+        s = Scenario(state(0), state(1), runs=[run_record(50, 1)], pulls=[pull(50, False)])
+        d = class_scope.decide(s.event, s.deps(), records_branch="records-p4")
+        self.assertIsNone(d["records_commit"])
+        self.assertEqual(d["near_misses"], {})
+
+    def test_synchronize_always_deletes_both_head_bound_labels(self):
+        s = Scenario(state(0), state(1), action="synchronize", payload_labels=[])
+        s.run()
+        deleted = sorted(path.rsplit("/", 1)[1] for m, path, _ in s.api.writes if m == "DELETE")
+        self.assertEqual(deleted, ["escape%3Arevert", "human-cleared"])
+
+    def test_a_forks_head_bound_label_does_not_count(self):
+        ev = [label_event(1, "labeled", "human-cleared", HUMAN, AFTER_PUSH)]
+        st_, _ = class_scope.labels_in_force(ev, {HUMAN}, None, same_repo_head=False)
+        self.assertIsNone(st_["human-cleared"])
+        s = Scenario(state(0), state(1), events=ev, force="golang.org/x/sync@v0.18.0", pushed=None)
+        s.event.head_repo = "someone/fork"
+        d = s.decide()
+        self.assertEqual(d["verdict"], "inconclusive")
+        self.assertIn("a fork's head", d["head_bound_note"])
+
+    def test_opened_by_falls_back_to_the_body_labelled_unverified(self):
+        s = Scenario(state(0), state(1))
+        s.event.body = ("Queue item 1 of class `go-module-bump`.\n\nOpened by the factory-controls agent workflow, "
+                        "run 12345, attempt 2, job `open`.")
+        d = s.decide()
+        self.assertEqual((d["opened_by"]["controls_run_id"], d["opened_by"]["controls_run_attempt"]), (12345, 2))
+        self.assertIn("unverified", class_scope.render_packet(d, SVC))
+
+    def test_annotation_is_one_line_of_the_fixed_fields(self):
+        d = Scenario(state(0), state(1)).run()
+        msg = class_scope.annotation_message(d)
+        self.assertNotIn("\n", msg)
+        a = json.loads(msg)
+        self.assertEqual((a["verdict"], a["pass_kind"], a["pr"]), ("pass", "class", 101))
+        self.assertNotIn("reasons", a)
+
+    def test_recompute_stays_inside_its_budget(self):
+        t = {"now": 0.0}
+        r = class_scope.DockerRecompute("img@sha256:" + "0" * 64, timeout=240, budget=500, backoff=0,
+                                        clock=lambda: t["now"])
+        r._mount_ok = True
+
+        def slow_once(files, module, version):
+            t["now"] += 240
+            return class_scope.RecomputeResult(False, network=True, error="recompute timed out")
+
+        r._once = slow_once
+        res = r({"go.mod": b"module x\n"}, "golang.org/x/sync", "v0.18.0")
+        self.assertFalse(res.ok)
+        self.assertTrue(res.network)
+        self.assertEqual(res.attempts, 2)
+        self.assertIn("budget", res.log)
+
+    def test_an_invisible_work_folder_is_named_before_go_runs(self):
+        r = class_scope.DockerRecompute("img@sha256:" + "0" * 64)
+        with mock.patch.object(class_scope.subprocess, "run",
+                               lambda *a, **k: mock.Mock(returncode=1, stdout=b"", stderr=b"")):
+            res = r({"go.mod": b"module x\n"}, "golang.org/x/sync", "v0.18.0")
+        self.assertFalse(res.ok)
+        self.assertIn("CLASS_SCOPE_WORKDIR", res.error)
+
+
 class TestCli(unittest.TestCase):
     def test_main_writes_verdict_summary_and_outputs(self):
         s = Scenario(state(0), state(1), force="")
+        stdout = io.StringIO()
         payload = {"action": "opened", "pull_request": {
             "number": 101, "html_url": "", "labels": [{"name": "reviewing"}],
             "head": {"sha": s.head, "ref": "agent/branch", "repo": {"full_name": SVC}},
@@ -483,7 +634,7 @@ class TestCli(unittest.TestCase):
                  mock.patch.object(class_scope, "Proxy", lambda *a, **k: FakeProxy()), \
                  mock.patch.object(class_scope, "DockerRecompute", lambda *a, **k: s.recompute), \
                  mock.patch.object(class_scope, "utcnow", lambda: NOW), \
-                 contextlib.redirect_stdout(io.StringIO()):
+                 contextlib.redirect_stdout(stdout):
                 rc = class_scope.main(["--event", ev, "--repo", SVC, "--out-dir", os.path.join(tmp, "o")])
             self.assertEqual(rc, 0)
             v = json.loads(read_text(os.path.join(tmp, "o", "verdict.json")))
@@ -495,6 +646,13 @@ class TestCli(unittest.TestCase):
                 self.assertIn(k, v)
             self.assertIn("verdict=pass\n", read_text(out))
             self.assertIn("Agent summary (unverified)", read_text(summary))
+            # stdout: workflow commands stopped around the readable lines, then one annotation.
+            lines = stdout.getvalue().splitlines()
+            self.assertTrue(lines[0].startswith("::stop-commands::"))
+            token = lines[0][len("::stop-commands::"):]
+            self.assertIn(f"::{token}::", lines)
+            self.assertTrue(lines[-1].startswith("::notice title=class-scope-verdict::"))
+            self.assertEqual(json.loads(lines[-1].split("::", 2)[2])["verdict"], "pass")
 
 
 if __name__ == "__main__":

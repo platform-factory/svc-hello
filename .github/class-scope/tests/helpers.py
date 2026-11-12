@@ -135,12 +135,12 @@ def run_record(pr: int, position: int) -> dict:
     return {"schema": 1, "class": "go-module-bump", "queue_position": position, "module": m,
             "version": v, "pr_number": pr, "head_sha": "0" * 40, "body_sha256": "0" * 64,
             "controls_run_id": 7000 + pr, "controls_run_attempt": 1, "job": "open",
-            "opened_at": "2026-11-19T09:00:00Z"}
+            "opened_at": "2026-11-19T09:00:00Z", "repo": SVC, "branch": "agent/branch"}
 
 
 def pull(number: int, merged: bool, merge_sha: str | None = None, merged_at: str = "2026-11-19T08:00:00Z") -> dict:
     return {"number": number, "state": "closed", "merged_at": merged_at if merged else None,
-            "closed_at": merged_at, "merge_commit_sha": merge_sha, "head": {"sha": "1" * 40, "ref": "x"},
+            "closed_at": merged_at, "merge_commit_sha": merge_sha, "head": {"sha": "1" * 40, "ref": "agent/branch"},
             "base": {"ref": "main"}}
 
 

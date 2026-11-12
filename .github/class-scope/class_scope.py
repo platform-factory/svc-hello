@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -66,12 +67,13 @@ CLASS_FILE_PATH = "classes/go-module-bump.yaml"
 RECORDS_BRANCH = "records"
 
 # The Dockerfile's builder image, pinned by the digest of its multi-platform
-# index (read with `docker buildx imagetools inspect golang:1.27.1-alpine` on
-# 2026-11-11). Used only when the class file does not name one; when it does,
-# the class file's pin wins, so the agent's job and this check recompute in
-# the same image.
+# index (read with `docker buildx imagetools inspect` on 2026-11-11; the
+# alpine3.24 tag go-test, the Dockerfile and the class file name resolves to
+# the same digest). Used only when the class file does not name one; when it
+# does, the class file's pin wins, so the agent's job and this check
+# recompute in the same image.
 DEFAULT_BUILDER_IMAGE = (
-    "golang:1.27.1-alpine"
+    "golang:1.27.1-alpine3.24"
     "@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414"
 )
 DEFAULT_GOPROXY = "https://proxy.golang.org"
@@ -93,6 +95,19 @@ ACTIONS_BOT_LOGIN = "github-actions[bot]"
 PLACEHOLDER_LOGIN = "LISTED-HUMAN-LOGIN"
 
 FORCED_REASON = "forced (M4, C-20)"
+
+# The decide step writes the verdict's fixed fields as one check-run
+# annotation with this title. Annotations are readable without a token,
+# unlike the verdict artifact (whose download needs `actions: read` on this
+# repository), so the controls repo's scorecard reads this.
+VERDICT_ANNOTATION_TITLE = "class-scope-verdict"
+ANNOTATION_FIELDS = ("schema", "verdict", "reason_class", "reason_codes", "pass_kind", "verifier_version",
+                     "pr", "head_sha", "main_sha", "queue_position", "module", "new", "class_file_commit",
+                     "decided_at", "tampers")
+# The comment that links to the packet (ADR-0024 §12: it links to the job
+# summary and is not the packet). One per pull request, found by this marker
+# on its first line and the author github-actions[bot].
+PACKET_COMMENT_MARKER = "<!-- class-scope:packet-link -->"
 
 SEMVER_RE = re.compile(
     r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -463,6 +478,9 @@ class GitHub:
     def delete(self, path: str) -> Any:
         return self._request("DELETE", path)[0]
 
+    def patch(self, path: str, body: Any) -> Any:
+        return self._request("PATCH", path, None, body)[0]
+
 
 # ---------------------------------------------------------------------------
 # Module proxy (.info) reader
@@ -547,10 +565,15 @@ class DockerRecompute:
     `go get` downloads sources and checks them against the sum database; it
     does not run them."""
 
+    # Each attempt is bounded, and so are all of them together: the job's
+    # timeout is 30 minutes, and a run that times out writes no verdict, adds
+    # no `needs-human` and uploads nothing. With 240 s per attempt and a
+    # 15-minute budget, decide always reaches an inconclusive (re-run) in time.
     def __init__(self, image: str, goproxy: str = DEFAULT_GOPROXY,
                  cache_volume: str | None = "class-scope-gomodcache",
                  retries: int = 3, backoff: float = 5.0, docker: str = "docker",
-                 timeout: float = 600.0, gosumdb: str = "sum.golang.org"):
+                 timeout: float = 240.0, gosumdb: str = "sum.golang.org",
+                 budget: float = 900.0, clock: Callable[[], float] = time.monotonic):
         self.image = image
         self.goproxy = goproxy
         self.cache_volume = cache_volume
@@ -559,13 +582,51 @@ class DockerRecompute:
         self.docker = docker
         self.timeout = timeout
         self.gosumdb = gosumdb
+        self.budget = budget
+        self.clock = clock
+        self._mount_ok: bool | None = None
+
+    def mount_visible(self) -> str | None:
+        """None when a file in the work folder is visible inside a container;
+        otherwise why not. On a laptop whose Docker daemon runs in a VM, a
+        folder the daemon does not share mounts as an empty directory, and
+        `go` then fails with the misleading "go.mod file not found"."""
+        if self._mount_ok:
+            return None
+        work = os.path.realpath(tempfile.mkdtemp(prefix="class-scope-probe-", dir=work_base()))
+        try:
+            with open(os.path.join(work, "probe"), "w") as f:
+                f.write("probe\n")
+            cmd = [self.docker, "run", "--rm", "-v", f"{work}:/w", "--entrypoint", "sh", self.image,
+                   "-c", "test -f /w/probe"]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout)
+            except FileNotFoundError:
+                return "docker is not installed"
+            except subprocess.TimeoutExpired:
+                return "the work-folder check timed out"
+            if proc.returncode != 0:
+                return (f"the work folder {os.path.dirname(work)} is not visible inside a container (exit "
+                        f"{proc.returncode}); set CLASS_SCOPE_WORKDIR to a folder the Docker daemon shares")
+            self._mount_ok = True
+            return None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     def __call__(self, files: dict[str, bytes], module: str, version: str) -> RecomputeResult:
         if not MODULE_PATH_RE.match(module) or not is_semver(version):
             return RecomputeResult(False, error=f"refusing to recompute {module}@{version}")
+        problem = self.mount_visible()
+        if problem:
+            return RecomputeResult(False, error=problem)
         log = []
         last = RecomputeResult(False)
+        start = self.clock()
         for attempt in range(1, self.retries + 1):
+            if attempt > 1 and self.clock() - start + self.timeout > self.budget:
+                log.append(f"attempt {attempt}: not started, the recompute budget of {self.budget:g} s would be exceeded")
+                last.network = True  # out of time: a re-run settles it, as for the network
+                break
             res = self._once(files, module, version)
             res.attempts = attempt
             log.append(f"attempt {attempt}: {'ok' if res.ok else res.error[-400:]}")
@@ -698,12 +759,15 @@ def read_class_file(api, controls_repo: str, path: str) -> tuple[str, str]:
     return _b64(c).decode("utf-8"), sha
 
 
-def read_records(api, controls_repo: str) -> dict:
+def read_records(api, controls_repo: str, repo: str | None = None, branch: str = RECORDS_BRANCH) -> dict:
     """Run records and seed records from the controls repo's `records` branch
     (written only by workflows; force-push and deletion refused). A missing
-    branch means no queue-item pull request has been opened yet."""
+    branch means no queue-item pull request has been opened yet. With
+    `repo`, a run record written for another repository (probe P4 runs the
+    agent's workflow against the throwaway repository) is left out, so a
+    colliding pull request number changes nothing here."""
     try:
-        sha = branch_tip(api, controls_repo, RECORDS_BRANCH)
+        sha = branch_tip(api, controls_repo, branch)
     except ApiError as e:
         if e.status == 404:
             return {"commit": None, "runs": [], "seed_prs": set()}
@@ -716,7 +780,8 @@ def read_records(api, controls_repo: str) -> dict:
         p = e["path"]
         if p.startswith("runs/") and p.endswith(".json"):
             rec = json.loads(blob(api, controls_repo, e["sha"]))
-            runs.append(rec)
+            if repo is None or (isinstance(rec, dict) and rec.get("repo") == repo):
+                runs.append(rec)
         elif p.startswith("seeds/") and p.endswith(".json"):
             stem = p[len("seeds/") : -len(".json")]
             if stem.isdigit():
@@ -743,7 +808,7 @@ def head_pushed_at(api, repo: str, head_ref: str, head_sha: str) -> dt.datetime 
 
 def labels_in_force(events: list[dict], human_logins: set[str],
                     head_pushed: dt.datetime | None,
-                    synchronize: bool = False) -> tuple[dict, list[dict]]:
+                    synchronize: bool = False, same_repo_head: bool = True) -> tuple[dict, list[dict]]:
     """The rule (ADR-0024 §6; readiness note C-17): a person's label is in
     force from a listed human login's `labeled` event that carries no
     `performed_via_github_app`, until a listed human login's `unlabeled`
@@ -786,6 +851,10 @@ def labels_in_force(events: list[dict], human_logins: set[str],
     if synchronize:
         # A new head: every head-bound label is for an earlier commit.
         state = {l: None for l in HEAD_BOUND_LABELS}
+    if head_pushed is None and not same_repo_head:
+        # A fork's head: its push time cannot be read here, so a head-bound
+        # label cannot be tied to this head and does not count.
+        state = {l: None for l in HEAD_BOUND_LABELS}
     return state, unknown
 
 
@@ -794,21 +863,38 @@ def labels_in_force(events: list[dict], human_logins: set[str],
 # ---------------------------------------------------------------------------
 
 
+def queue_runs(runs: list[dict], prs: dict[int, dict]) -> list[dict]:
+    """The run records whose pull request is the one the open job made: the
+    pull request exists and its head branch is the record's `branch`."""
+    out = []
+    for r in runs:
+        n = r.get("pr_number")
+        p = prs.get(n) if isinstance(n, int) else None
+        if p is not None and ((p.get("head") or {}).get("ref") or None) == (r.get("branch") or None):
+            out.append(r)
+    return out
+
+
 def near_miss_positions(runs: list[dict], seed_prs: set[int], pulls_closed: list[dict],
-                        reopened_closed: Callable[[int], bool]) -> dict[int, int]:
+                        reopened_closed: Callable[[int], bool],
+                        retargeted: Iterable[int] = ()) -> dict[int, int]:
     """{queue position: pull request number} for every non-seed queue-item
     pull request closed unmerged. Read from GitHub's state: a pull request
-    that is closed and not merged now, or one that is open again after a
-    close (a close is never a free retry). A queue-item pull request is one
-    whose number is in a run record; a seed is one with a seed record."""
+    that is closed and not merged now, one that is open again after a close
+    (a close is never a free retry), or one whose base was changed away from
+    main (it no longer reaches main). A queue-item pull request is one whose
+    number is in a run record; a seed is one with a seed record."""
     closed = {p["number"]: p for p in pulls_closed}
+    moved = set(retargeted)
     out: dict[int, int] = {}
     for r in runs:
         n, pos = r.get("pr_number"), r.get("queue_position")
         if not isinstance(n, int) or not isinstance(pos, int) or n in seed_prs:
             continue
         p = closed.get(n)
-        if p is not None:
+        if n in moved and not (p or {}).get("merged_at"):
+            out.setdefault(pos, n)
+        elif p is not None:
             if not p.get("merged_at"):
                 out.setdefault(pos, n)
         elif reopened_closed(n):
@@ -933,14 +1019,25 @@ def diagnose(main_mod: bytes, main_sum: bytes, head_mod: bytes | None, head_sum:
 
 
 def module_moves(old_mod: bytes, new_mod: bytes) -> list[dict]:
-    a, b = gomod_versions(parse_gomod(old_mod.decode())), gomod_versions(parse_gomod(new_mod.decode()))
+    # errors="replace": a file that is not UTF-8 is still described; the
+    # verdict on it is made by the byte comparison (reason `encoding`).
+    a = gomod_versions(parse_gomod(old_mod.decode(errors="replace")))
+    b = gomod_versions(parse_gomod(new_mod.decode(errors="replace")))
     return [{"module": p, "old": a.get(p), "new": b.get(p)} for p in sorted(set(a) | set(b)) if a.get(p) != b.get(p)]
 
 
 def gosum_changes(old_sum: bytes, new_sum: bytes) -> dict:
-    a = set(old_sum.decode().splitlines())
-    b = set(new_sum.decode().splitlines())
+    a = set(old_sum.decode(errors="replace").splitlines())
+    b = set(new_sum.decode(errors="replace").splitlines())
     return {"removed": sorted(a - b), "added": sorted(b - a)}
+
+
+def is_utf8(data: bytes | None) -> bool:
+    try:
+        (data or b"").decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +1065,7 @@ class Event:
     head_repo: str | None
     base_ref: str
     html_url: str = ""
+    body: str = ""
 
     @staticmethod
     def from_payload(repo: str, payload: dict) -> "Event":
@@ -981,6 +1079,7 @@ class Event:
             head_repo=((pr["head"].get("repo") or {}).get("full_name")),
             base_ref=pr["base"]["ref"],
             html_url=pr.get("html_url", ""),
+            body=pr.get("body") or "",
         )
 
 
@@ -996,6 +1095,7 @@ class Verdict:
             "unknown_label_events": [], "head_pushed_at": None, "records_commit": None,
             "near_misses": {}, "changed_files": [], "gomod_change": [], "gosum_change": None,
             "opened_by": None, "recompute": None, "label_writes": [], "decided_at": None,
+            "tampers": [], "packet_comment": None, "head_bound_note": None,
         }
 
     def reason(self, code: str, text: str):
@@ -1010,13 +1110,13 @@ class Verdict:
 
 
 def decide(event: Event, deps: Deps, force_var: str = "", controls_repo: str = CONTROLS_REPO,
-           class_file_path: str = CLASS_FILE_PATH) -> dict:
+           class_file_path: str = CLASS_FILE_PATH, records_branch: str = RECORDS_BRANCH) -> dict:
     """Compute the full verdict for one event. Never raises: any failure of
     this check's own is an inconclusive of the re-run class, never a pass."""
     v = Verdict(event)
     v.d["decided_at"] = iso(deps.now())
     try:
-        return _decide(event, deps, v, force_var.strip(), controls_repo, class_file_path)
+        return _decide(event, deps, v, force_var.strip(), controls_repo, class_file_path, records_branch)
     except ProxyUnreachable as e:
         v.reason("proxy-unreachable", f"module proxy unreachable after retries: {e}")
         return v.finish("inconclusive", "rerun")
@@ -1031,8 +1131,39 @@ def decide(event: Event, deps: Deps, force_var: str = "", controls_repo: str = C
         return v.finish("inconclusive", "rerun")
 
 
+def opened_by_from_body(body: str) -> dict | None:
+    """The controls run named in the pull request body the open job writes
+    ("Opened by the factory-controls agent workflow, run <id>, attempt <n>").
+    Used only until the run record exists (the record is written just after
+    the pull request opens, so the first run on `opened` may not see it), and
+    labelled unverified: the body is text the pull request controls."""
+    m = re.search(r"factory-controls agent workflow, run (\d+), attempt (\d+)", body or "")
+    if not m:
+        return None
+    return {"controls_run_id": int(m.group(1)), "controls_run_attempt": int(m.group(2)), "job": "open",
+            "source": "pull request body (unverified until the run record exists)"}
+
+
+def read_run_prs(api, repo: str, runs: list[dict], event: Event) -> dict[int, dict]:
+    """Every run-record pull request, read by number whatever its base (a
+    pull request retargeted away from main drops out of a base=main listing).
+    The event's own pull request comes from the event."""
+    out: dict[int, dict] = {}
+    for n in sorted({r.get("pr_number") for r in runs if isinstance(r.get("pr_number"), int)}):
+        if n == event.pr:
+            out[n] = {"number": n, "state": "open", "merged_at": None, "merge_commit_sha": None,
+                      "head": {"sha": event.head_sha, "ref": event.head_ref}, "base": {"ref": event.base_ref}}
+            continue
+        try:
+            out[n] = api.get(f"/repos/{repo}/pulls/{n}")
+        except ApiError as e:
+            if e.status != 404:
+                raise
+    return out
+
+
 def _decide(event: Event, deps: Deps, v: Verdict, force_var: str, controls_repo: str,
-            class_file_path: str) -> dict:
+            class_file_path: str, records_branch: str = RECORDS_BRANCH) -> dict:
     api, repo, d = deps.api, event.repo, v.d
 
     # --- inputs every outcome needs -------------------------------------
@@ -1049,20 +1180,32 @@ def _decide(event: Event, deps: Deps, v: Verdict, force_var: str, controls_repo:
 
     events = api.paginate(f"/repos/{repo}/issues/{event.pr}/events")
     pushed = None
-    if event.head_repo in (None, repo):
+    same_repo = event.head_repo in (None, repo)
+    if same_repo:
         pushed = head_pushed_at(api, repo, event.head_ref, event.head_sha)
     d["head_pushed_at"] = iso(pushed)
     in_force, unknown = labels_in_force(events, cs["human_logins"], pushed,
-                                        synchronize=event.action == "synchronize")
+                                        synchronize=event.action == "synchronize", same_repo_head=same_repo)
+    if pushed is None:
+        d["head_bound_note"] = ("the head's push time could not be read: human-cleared and escape:revert count "
+                                + ("as applied (a branch of this repository; this check removes both on every "
+                                   "push)" if same_repo else "not at all (a fork's head)"))
     d["labels_in_force"] = in_force
     d["unknown_label_events"] = unknown
     cleared = in_force.get(LABEL_HUMAN_CLEARED) is not None
     revert = in_force.get(LABEL_ESCAPE_REVERT) is not None
 
-    records = read_records(api, controls_repo)
+    records = read_records(api, controls_repo, repo, records_branch)
     d["records_commit"] = records["commit"]
-    pulls_closed = api.paginate(f"/repos/{repo}/pulls", state="closed", base="main")
-    open_run_prs = {r.get("pr_number") for r in records["runs"]} - {p["number"] for p in pulls_closed}
+    run_prs = read_run_prs(api, repo, records["runs"], event)
+    runs = queue_runs(records["runs"], run_prs)
+    pulls_closed = [p for p in run_prs.values() if p.get("state") == "closed"]
+    retargeted = sorted(n for n, p in run_prs.items() if (p.get("base") or {}).get("ref") not in (None, "main"))
+    for n in retargeted:
+        d["tampers"].append({"code": "base-changed", "pr": n,
+                             "text": f"queue-item pull request #{n} targets "
+                                     f"{(run_prs[n].get('base') or {}).get('ref')}, not main: closed to the class"})
+    open_run_prs = {r.get("pr_number") for r in runs} - {p["number"] for p in pulls_closed}
 
     def reopened_closed(n: int) -> bool:
         # Only for queue-item pull requests that are open now: were they ever
@@ -1070,13 +1213,15 @@ def _decide(event: Event, deps: Deps, v: Verdict, force_var: str, controls_repo:
         evs = events if n == event.pr else api.paginate(f"/repos/{repo}/issues/{n}/events")
         return any(e.get("event") == "closed" for e in evs)
 
-    near = near_miss_positions(records["runs"], records["seed_prs"], pulls_closed,
-                               lambda n: n in open_run_prs and reopened_closed(n))
+    near = near_miss_positions(runs, records["seed_prs"], pulls_closed,
+                               lambda n: n in open_run_prs and reopened_closed(n), retargeted)
     d["near_misses"] = {str(k): n for k, n in sorted(near.items())}
-    for r in records["runs"]:
+    for r in runs:
         if r.get("pr_number") == event.pr:
             d["opened_by"] = {k: r.get(k) for k in ("controls_run_id", "controls_run_attempt", "job",
                                                      "queue_position", "module", "version", "opened_at")}
+    if d["opened_by"] is None:
+        d["opened_by"] = opened_by_from_body(event.body)
 
     main_src = module_sources(api, repo, main_sha)
     main_mod, main_sum = main_src["go.mod"], main_src.get("go.sum", b"")
@@ -1134,12 +1279,22 @@ def _decide(event: Event, deps: Deps, v: Verdict, force_var: str, controls_repo:
     if bad_mode:
         return v.finish("fail")
     head_mod, head_sum = head_files["go.mod"], head_files["go.sum"]
+    # Bytes first: a class file that is not UTF-8 text is off-class, and must
+    # never reach a decode that would turn it into the check's own failure
+    # (an inconclusive nobody clears and nothing closes).
+    for name, data in (("go.mod", head_mod), ("go.sum", head_sum)):
+        if data is not None and not is_utf8(data):
+            v.reason("encoding", f"{name} at the head is not UTF-8 text")
+    if any(c == "encoding" for c in d["reason_codes"]):
+        d["gomod_change"] = module_moves(main_mod, head_mod or b"")
+        d["gosum_change"] = gosum_changes(main_sum, head_sum or b"")
+        return v.finish("fail")
 
     # Pass for a revert of the latest class merge, by a person, with
     # escape:revert in force (ADR-0024 §6, §9 (b)).
     revert_note = None
     if revert:
-        latest = latest_class_merge(records["runs"], pulls_closed)
+        latest = latest_class_merge(runs, pulls_closed)
         if latest is None:
             revert_note = "escape:revert is in force but no class merge exists to revert"
         else:
@@ -1241,6 +1396,30 @@ def upstream_links(module: str, old: str | None, new: str | None) -> list[str]:
     return links
 
 
+# Text the pull request controls (file names, go.mod lines, module paths,
+# go.sum lines, and the reasons that quote them) reaches the packet only
+# through these two functions, so it can add no heading, line, link or code
+# fence to the job summary (ADV-13).
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()<>#+!|~])")
+
+
+def _no_controls(text: str) -> str:
+    # JSON's string escapes for every control character (newlines included).
+    return "".join(json.dumps(c)[1:-1] if ord(c) < 32 or ord(c) == 127 else c for c in str(text))
+
+
+def esc(text: Any) -> str:
+    """Inline Markdown text: control characters escaped, Markdown punctuation
+    backslash-escaped, so it renders as the literal characters."""
+    return _MD_SPECIAL.sub(r"\\\1", _no_controls(text))
+
+
+def code(text: Any) -> str:
+    """A code span (or a line inside a fence): control characters escaped and
+    backticks replaced, so it cannot close the span or the fence."""
+    return _no_controls(text).replace("`", "'")
+
+
 def render_packet(d: dict, repo: str, server: str = "https://github.com",
                   controls_repo: str = CONTROLS_REPO) -> str:
     L: list[str] = []
@@ -1254,21 +1433,24 @@ def render_packet(d: dict, repo: str, server: str = "https://github.com",
     L.append("")
     L.append("### Verdict and reasons")
     if d.get("reasons"):
-        for code, text in zip(d.get("reason_codes", []), d["reasons"]):
-            L.append(f"- `{code}`: {text}")
+        for rc, text in zip(d.get("reason_codes", []), d["reasons"]):
+            L.append(f"- `{code(rc)}`: {esc(text)}")
+    elif verdict == "pass":
+        L.append("- none: " + pass_sentence(d))
     else:
-        L.append("- none: the change is byte for byte the queue's next item" if verdict == "pass" else "- none recorded")
+        L.append("- none recorded")
     L.append("")
     L.append("### The change")
     if d.get("module"):
-        L.append(f"- Queue position {d.get('queue_position')}: `{d['module']}` {d.get('old')} -> {d.get('new')}")
+        L.append(f"- Queue position {d.get('queue_position')}: `{code(d['module'])}` {esc(d.get('old'))} -> {esc(d.get('new'))}")
     else:
         L.append("- Queue: no next item")
     forced = d.get("forced") or []
-    L.append("- Forced modules: " + (", ".join(f"`{f['module']}` {f['old']} -> {f['new']}" for f in forced) if forced else "none"))
+    L.append("- Forced modules: " + (", ".join(f"`{code(f['module'])}` {esc(f['old'])} -> {esc(f['new'])}"
+                                              for f in forced) if forced else "none"))
     gm = d.get("gomod_change") or []
     L.append("- go.mod at the head, in words: " + ("; ".join(
-        f"`{c['module']}` {c['old'] or '(absent)'} -> {c['new'] or '(removed)'}" for c in gm) if gm
+        f"`{code(c['module'])}` {esc(c['old'] or '(absent)')} -> {esc(c['new'] or '(removed)')}" for c in gm) if gm
         else "no requirement changed"))
     gs = d.get("gosum_change")
     if gs:
@@ -1276,8 +1458,8 @@ def render_packet(d: dict, repo: str, server: str = "https://github.com",
         if gs["removed"] or gs["added"]:
             L.append("")
             L.append("```diff")
-            L.extend("- " + x for x in gs["removed"][:40])
-            L.extend("+ " + x for x in gs["added"][:40])
+            L.extend("- " + code(x) for x in gs["removed"][:40])
+            L.extend("+ " + code(x) for x in gs["added"][:40])
             L.append("```")
     if d.get("release_time"):
         L.append(f"- Release: {d['release_time']} by the module proxy's .info, {d.get('release_age_days')} days old")
@@ -1286,25 +1468,33 @@ def render_packet(d: dict, repo: str, server: str = "https://github.com",
             L.append(f"- Upstream: {link}")
     L.append(f"- govulncheck findings: the `go-test` check's job summary on this head ({server}/{repo}/pull/{d.get('pr')}/checks)")
     if d.get("changed_files"):
-        L.append("- Paths changed against main: " + ", ".join(f"`{f['filename']}` ({f['status']})" for f in d["changed_files"]))
+        L.append("- Paths changed against main: " + ", ".join(f"`{code(f['filename'])}` ({esc(f['status'])})"
+                                                              for f in d["changed_files"]))
     L.append("")
     L.append("### Provenance")
     L.append(f"- Class file: `{controls_repo}` `classes/go-module-bump.yaml` at `{d.get('class_file_commit')}`")
     L.append(f"- Verifier: class_scope.py {d.get('verifier_version')}, builder image `{d.get('builder_image')}`")
     ob = d.get("opened_by")
     if ob and ob.get("controls_run_id"):
-        L.append(f"- Opened by: {server}/{controls_repo}/actions/runs/{ob['controls_run_id']}"
-                 f"/attempts/{ob.get('controls_run_attempt') or 1} (job `{ob.get('job')}`)")
+        L.append(f"- Opened by: {server}/{controls_repo}/actions/runs/{int(ob['controls_run_id'])}"
+                 f"/attempts/{int(ob.get('controls_run_attempt') or 1)} (job `{code(ob.get('job'))}`)"
+                 + (f"; {esc(ob['source'])}" if ob.get("source") else ""))
     else:
         L.append("- Opened by: no run record names this pull request (not a queue-item pull request)")
     lif = d.get("labels_in_force") or {}
     L.append("- Labels in force: " + ", ".join(
-        f"`{k}` " + (f"by {x['actor']} at {x['at']}" if x else "no") for k, x in lif.items()))
+        f"`{k}` " + (f"by {esc(x['actor'])} at {esc(x['at'])}" if x else "no") for k, x in lif.items()))
+    if d.get("head_bound_note"):
+        L.append(f"- Note: {esc(d['head_bound_note'])}")
     if d.get("unknown_label_events"):
         L.append(f"- Unknown label events (not counted): {len(d['unknown_label_events'])}")
         for u in d["unknown_label_events"]:
-            L.append(f"  - `{u['label']}` {u['event']} by {u['actor']} at {u['at']}"
-                     + (f" via App `{u['via_app']}`" if u.get("via_app") else "") + f": {u['effect']}")
+            L.append(f"  - `{code(u['label'])}` {esc(u['event'])} by {esc(u['actor'])} at {esc(u['at'])}"
+                     + (f" via App `{code(u['via_app'])}`" if u.get("via_app") else "") + f": {esc(u['effect'])}")
+    if d.get("tampers"):
+        L.append(f"- Tampers reported (the verdict does not rest on them): {len(d['tampers'])}")
+        for t in d["tampers"]:
+            L.append(f"  - `{code(t.get('code'))}`: {esc(t.get('text'))}")
     if d.get("near_misses"):
         L.append("- Near-miss-closed queue positions: " + ", ".join(f"{k} (#{n})" for k, n in d["near_misses"].items()))
     L.append("")
@@ -1317,6 +1507,24 @@ def render_packet(d: dict, repo: str, server: str = "https://github.com",
 # ---------------------------------------------------------------------------
 # Side effects in the workflow: labels, outputs
 # ---------------------------------------------------------------------------
+
+
+def pass_sentence(d: dict) -> str:
+    """Why a pass with no reasons passed, by its kind (ADV-12): the packet is
+    the reviewer's evidence, so it must not call a person's pass a recompute."""
+    kind = d.get("pass_kind")
+    lif = d.get("labels_in_force") or {}
+    if kind == "human-cleared-nonclass":
+        x = lif.get(LABEL_HUMAN_CLEARED) or {}
+        return (f"changes neither class file; cleared by {esc(x.get('actor'))} at {esc(x.get('at'))} "
+                "(human-cleared, this head); the wall entry still needs the listed human's approval")
+    if kind == "escape-revert":
+        r = d.get("revert_of") or {}
+        x = lif.get(LABEL_ESCAPE_REVERT) or {}
+        return (f"go.mod and go.sum equal those at {esc((r.get('parent') or '')[:12])}, the parent of "
+                f"#{esc(r.get('pr'))}, the latest class merge; escape:revert by {esc(x.get('actor'))} at "
+                f"{esc(x.get('at'))}")
+    return "the change is byte for byte the queue's next item"
 
 
 def remove_label(api, repo: str, pr: int, name: str) -> dict:
@@ -1337,16 +1545,55 @@ def add_label(api, repo: str, pr: int, name: str) -> dict:
         return {"label": name, "action": "add", "ok": False, "error": str(e)[:300]}
 
 
+def packet_comment_body(repo: str, pr: int, server: str = "https://github.com") -> str:
+    """The same text on every run, so any other text is an edit."""
+    return (f"{PACKET_COMMENT_MARKER}\n"
+            f"The packet for this pull request is the job summary of its `class-scope` check on the head "
+            f"commit: {server}/{repo}/pull/{pr}/checks. This comment only links to it and is not evidence "
+            f"(ADR-0024 §12). class-scope writes it again if it is edited or deleted, and reports that.\n")
+
+
+def ensure_packet_comment(api, event: Event, server: str = "https://github.com") -> dict:
+    """Create, keep or restore the one comment that links to the packet.
+    A missing comment after the pull request's first run, or one whose text
+    is not this check's, is reported as a tamper; the verdict does not change."""
+    want = packet_comment_body(event.repo, event.pr, server)
+    try:
+        comments = api.paginate(f"/repos/{event.repo}/issues/{event.pr}/comments")
+        mine = [c for c in comments if (c.get("user") or {}).get("login") == ACTIONS_BOT_LOGIN
+                and (c.get("body") or "").startswith(PACKET_COMMENT_MARKER)]
+        if not mine:
+            c = api.post(f"/repos/{event.repo}/issues/{event.pr}/comments", {"body": want}) or {}
+            out = {"id": (c or {}).get("id") if isinstance(c, dict) else None, "action": "created"}
+            if event.action != "opened":
+                out["tamper"] = {"code": "packet-comment-missing",
+                                 "text": "the comment linking to the packet was missing; written again"}
+            return out
+        c = mine[0]
+        if c.get("body") != want:
+            api.patch(f"/repos/{event.repo}/issues/comments/{c['id']}", {"body": want})
+            return {"id": c["id"], "action": "restored",
+                    "tamper": {"code": "packet-comment-edited",
+                               "text": "the comment linking to the packet had other text; restored"}}
+        return {"id": c["id"], "action": "unchanged"}
+    except ApiError as e:
+        return {"action": "error", "error": str(e)[:300]}
+
+
 def run(event: Event, deps: Deps, force_var: str = "", payload_labels: Iterable[str] = (),
-        controls_repo: str = CONTROLS_REPO, class_file_path: str = CLASS_FILE_PATH) -> dict:
-    """decide() plus the label writes ADR-0024 §6 gives this check."""
+        controls_repo: str = CONTROLS_REPO, class_file_path: str = CLASS_FILE_PATH,
+        records_branch: str = RECORDS_BRANCH, server: str = "https://github.com") -> dict:
+    """decide() plus the writes ADR-0024 §6 and §12 give this check: the
+    head-bound labels removed on a push, `needs-human` on an inconclusive,
+    and the comment that links to the packet."""
     writes = []
     if event.action == "synchronize":
-        present = set(payload_labels)
+        # Both, always: the event payload's label list can be stale, and an
+        # App's removal from the list does not end a person's label (ADV-19).
+        # A 404 means the label was not there.
         for name in HEAD_BOUND_LABELS:
-            if name in present:
-                writes.append(remove_label(deps.api, event.repo, event.pr, name))
-    d = decide(event, deps, force_var, controls_repo, class_file_path)
+            writes.append(remove_label(deps.api, event.repo, event.pr, name))
+    d = decide(event, deps, force_var, controls_repo, class_file_path, records_branch)
     failed = [w for w in writes if not w["ok"]]
     if failed:
         # The removal is what keeps an earlier head's clearance from counting
@@ -1359,7 +1606,22 @@ def run(event: Event, deps: Deps, force_var: str = "", payload_labels: Iterable[
     if d["verdict"] == "inconclusive":
         writes.append(add_label(deps.api, event.repo, event.pr, LABEL_NEEDS_HUMAN))
     d["label_writes"] = writes
+    pc = ensure_packet_comment(deps.api, event, server)
+    if pc.get("tamper"):
+        d["tampers"].append(pc.pop("tamper"))
+    d["packet_comment"] = pc
     return d
+
+
+def annotation_message(d: dict) -> str:
+    """The verdict's fixed fields as compact JSON, escaped for a workflow
+    command's message (`%`, CR and LF)."""
+    a = {k: d.get(k) for k in ANNOTATION_FIELDS}
+    a["tampers"] = [t.get("code") for t in d.get("tampers") or []]
+    a["unknown_label_events"] = [{k: u.get(k) for k in ("label", "event", "actor", "via_app")}
+                                 for u in d.get("unknown_label_events") or []]
+    text = json.dumps(a, sort_keys=True, separators=(",", ":"))
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def verifier_version() -> str:
@@ -1379,6 +1641,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", required=True, help="where verdict.json and summary.md go")
     ap.add_argument("--controls-repo", default=CONTROLS_REPO)
     ap.add_argument("--class-file", help="read the class file from this path instead of the controls repo (local runs)")
+    ap.add_argument("--records-branch", default=os.environ.get("RECORDS_BRANCH") or RECORDS_BRANCH,
+                    help="the controls repo's records branch (probe P4: records-p4)")
     args = ap.parse_args(argv)
 
     with open(args.event) as f:
@@ -1396,7 +1660,9 @@ def main(argv: list[str] | None = None) -> int:
             deps.class_file_text = f.read()
         deps.class_file_commit = f"local:{args.class_file}"
     labels = [l["name"] for l in payload["pull_request"].get("labels", [])]
-    d = run(event, deps, os.environ.get("M4_FORCE_INCONCLUSIVE", ""), labels, args.controls_repo)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    d = run(event, deps, os.environ.get("M4_FORCE_INCONCLUSIVE", ""), labels, args.controls_repo,
+            records_branch=args.records_branch, server=server)
     d["verifier_version"] = verifier_version()
     d["run"] = {k: os.environ.get(k) for k in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA")}
 
@@ -1407,8 +1673,7 @@ def main(argv: list[str] | None = None) -> int:
     with open(os.path.join(args.out_dir, "verdict.json"), "w") as f:
         json.dump(d, f, indent=2, sort_keys=True)
         f.write("\n")
-    packet = render_packet(d, args.repo, os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
-                           args.controls_repo)
+    packet = render_packet(d, args.repo, server, args.controls_repo)
     with open(os.path.join(args.out_dir, "summary.md"), "w") as f:
         f.write(packet)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -1417,8 +1682,15 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"verdict={d['verdict']}\nreason_class={d['reason_class'] or ''}\n")
+    # Workflow commands are stopped while text the pull request controls is
+    # printed (the reasons quote file names and go.mod lines), so no line of
+    # it can become an annotation; then the one verdict annotation is written.
+    resume = secrets.token_hex(16)
+    print(f"::stop-commands::{resume}")
     print(json.dumps({"verdict": d["verdict"], "reason_class": d["reason_class"],
                       "pass_kind": d["pass_kind"], "reasons": d["reasons"]}, indent=2))
+    print(f"::{resume}::")
+    print(f"::notice title={VERDICT_ANNOTATION_TITLE}::{annotation_message(d)}")
     return 0
 
 

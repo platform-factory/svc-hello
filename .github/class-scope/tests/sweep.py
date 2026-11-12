@@ -159,6 +159,12 @@ def main() -> int:
     g.add_argument("--write", action="store_true")
     g.add_argument("--check", action="store_true")
     a = ap.parse_args()
+    # Name the real problem before `go` names a misleading one ("go.mod file
+    # not found" when the Docker daemon cannot see the work folder).
+    problem = class_scope.DockerRecompute(IMAGE).mount_visible()
+    if problem:
+        print(f"sweep: {problem}", file=sys.stderr)
+        return 2
     got = states()
     if a.write:
         if os.path.isdir(SWEEP_DIR):

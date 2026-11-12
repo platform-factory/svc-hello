@@ -73,7 +73,13 @@ because a skipped job reports success.
    `GOPROXY=https://proxy.golang.org`, `GOSUMDB=sum.golang.org` and
    `GOFLAGS` empty, run `go get <module>@<version>` and then `go mod tidy`.
    `go get` downloads module sources and checks them against the sum
-   database; it does not run them. The recompute is tried three times.
+   database; it does not run them. The recompute is tried three times, each
+   attempt bounded at 240 seconds and all of them at 15 minutes, so the run
+   reaches an inconclusive (re-run) well inside the job's 30-minute timeout.
+   Before the first attempt it checks that a file in the work folder is
+   visible inside a container, and names `CLASS_SCOPE_WORKDIR` when it is not
+   (a laptop whose Docker daemon runs in a VM; on a runner the work folder is
+   `RUNNER_TEMP`).
 6. **Compare.** The head's two files must equal the result byte for byte.
    Otherwise the verdict is fail, with reasons that say why in words
    (`diagnose`): the verdict is the comparison; the reasons explain it.
@@ -98,7 +104,7 @@ clearable class by applying `human-cleared`, whose label event re-runs the
 check. Any bug in the verifier is caught and reported as an inconclusive of
 the re-run class; no code path turns an exception into a pass.
 
-The verdict is written three ways, all by the workflow's own token, none of
+The verdict is written four ways, all by the workflow's own token, none of
 which the agent App can write:
 
 1. **Step names.** `decide` runs the verifier and exits 0 whenever it reached a
@@ -107,7 +113,20 @@ which the agent App can write:
    step means no verdict, which readers treat as an inconclusive to re-run.
    Readers find the failed step through
    `GET /repos/{o}/{r}/actions/runs/{id}/jobs`.
-2. **Artifact** `class-scope-verdict`, holding `verdict.json` (schema 1). The
+2. **Annotation.** The decide step prints one workflow command,
+   `::notice title=class-scope-verdict::<JSON>`, holding the fixed fields
+   (`verdict`, `reason_class`, `reason_codes`, `pass_kind`,
+   `verifier_version`, `pr`, `head_sha`, `main_sha`, `queue_position`,
+   `module`, `new`, `class_file_commit`, `decided_at`, `tampers`, and the
+   unknown label events' label, event, actor and App). GitHub keeps it on the
+   check run; `GET /repos/{o}/{r}/check-runs/{id}/annotations` is readable
+   without a token, unlike the artifact, so the controls repo's scorecard
+   reads this. Every line the verifier prints that could carry text from the
+   pull request is printed between `::stop-commands::<random>` and its
+   resume, so no such text can become an annotation; readers trust exactly
+   one annotation with that title.
+3. **Artifact** `class-scope-verdict-attempt-<n>` (one per run attempt, so a
+   re-run keeps the earlier attempt's reason), holding `verdict.json` (schema 1). The
    fields the build contract fixes: `schema`, `verdict`, `reason_class`,
    `reasons`, `pass_kind`, `head_sha`, `main_sha`, `pr`, `queue_position`,
    `module`, `old`, `new`, `forced`, `release_time`, `release_age_days`,
@@ -116,16 +135,33 @@ which the agent App can write:
    per reason, same order), `event_action`, `builder_image`,
    `head_pushed_at`, `records_commit`, `near_misses`, `changed_files`,
    `gomod_change`, `gosum_change`, `expected_sha256`, `head_sha256`,
-   `opened_by` (the run record's controls run and job), `recompute`,
-   `revert_of`, `label_writes`, `decided_at`, `run`.
-3. **Job summary**, which is the packet (ADR-0024 §12): queue position and
+   `opened_by` (the run record's controls run and job; before the record
+   exists, the run named in the pull request body, labelled unverified),
+   `recompute`, `revert_of`, `label_writes`, `decided_at`, `run`,
+   `tampers` (a queue-item pull request retargeted away from `main`, the
+   packet-link comment missing or edited), `packet_comment`,
+   `head_bound_note`.
+4. **Job summary**, which is the packet (ADR-0024 §12): queue position and
    item, target old → new, forced modules, the `go.mod` change in words, the
    `go.sum` lines changed, release age, upstream links, where `go-test`'s
    govulncheck findings are, the verdict with its reasons, the class file's
    commit, the verifier's version and image, the controls run and job that
    opened the pull request, labels in force and unknown label events. The
    agent's prose is linked under "Agent summary (unverified)" and never
-   copied.
+   copied. Every string the pull request controls (file names, `go.mod`
+   lines, module paths, `go.sum` lines, and the reasons that quote them)
+   passes through one escaper: control characters as JSON escapes, Markdown
+   punctuation backslash-escaped, backticks replaced inside code, so it can
+   add no heading, line, link or fence. A pass with no reasons says which
+   pass it is: the recompute, a person's `human-cleared` on a pull request
+   that changes neither class file, or the revert of the latest class merge.
+
+One pull request comment links to the packet (ADR-0024 §12: it is not the
+packet). The check writes it on the first run, finds it later by the author
+`github-actions[bot]` and the marker `<!-- class-scope:packet-link -->` on
+its first line, restores it when its text has changed, writes it again when
+it is gone, and reports either as a tamper in the packet and the annotation.
+The verdict never rests on it.
 
 Reason codes: `head-behind-main`, `base-not-main`, `path-outside-class`,
 `nonclass-not-cleared`, `class-file-status`, `class-file-mode`,
@@ -198,8 +234,14 @@ read; `svc-hello` holds none. The checkout keeps no credential
   `agent.builder_image` (if present, must be pinned by `@sha256:`). JSON is
   read directly; YAML through PyYAML or `yq`, both on GitHub's runners. The
   controls repository's `factory/classfile.py` validates the whole file.
-- Records: `runs/*.json` (`pr_number`, `queue_position`, and the controls run
-  fields for the packet) and the names of `seeds/*.json`.
+- Records: `runs/*.json` (`pr_number`, `queue_position`, `repo`, `branch`,
+  and the controls run fields for the packet) and the names of
+  `seeds/*.json`, from the controls repo's `records` branch (`--records-branch`
+  or `RECORDS_BRANCH` names another; probe P4 uses `records-p4`). A run
+  record for another repository, or whose pull request's head branch is not
+  its `branch`, is not a queue item here. Each run-record pull request is read
+  by number, whatever its base; one retargeted away from `main` counts as
+  closed unmerged (a near-miss) and is reported as a tamper.
 - Environment: `GITHUB_TOKEN`, `M4_FORCE_INCONCLUSIVE`, `GITHUB_EVENT_PATH`
   (through `--event`), and optionally `CLASS_SCOPE_GOPROXY`,
   `CLASS_SCOPE_WORKDIR`.
@@ -224,8 +266,14 @@ python3 -m unittest discover -s tests
   real `go` commands, and shows a young release as clearable and an
   unreachable proxy or sum database as re-run. It is skipped, visibly, when
   `docker` is not on the PATH. When the Docker daemon runs in a VM that does
-  not share the system temporary directory, set `CLASS_SCOPE_WORKDIR` to a
-  directory it does share.
+  not share the system temporary directory (Docker Desktop on macOS shares
+  the home folder, not `/private/tmp`), set `CLASS_SCOPE_WORKDIR` to a
+  directory it does share, for example:
+
+  ```sh
+  mkdir -p ~/.cache/class-scope && CLASS_SCOPE_WORKDIR=~/.cache/class-scope python3 -m unittest discover -s tests
+  CLASS_SCOPE_WORKDIR=~/.cache/class-scope python3 tests/sweep.py --check
+  ```
 
 `tests/sweep.py --write` re-records `tests/data/sweep/` (the `go 1.26.0`
 baseline and the 25 end states) and `--check` compares. `tests/data/proxy-info/`
@@ -244,7 +292,10 @@ holds the module proxy's `.info` for the 25 items, read on 2026-11-11.
   repositories with it.
 - A fork's head commit is read through the base repository's API, which
   GitHub serves for pull request heads; not tried, and M4 has no fork pull
-  requests.
+  requests. A fork's push time cannot be read from this repository's
+  activity, so on a fork's head `human-cleared` and `escape:revert` do not
+  count at all (the packet says so); on every push both are removed whether
+  or not the event's label list shows them.
 - A seed reads as a near-miss between its close and its seed record being
   written; the opening job writes the record before it opens the next item.
 - Any change to what this check decides, after the L1 switch-on, is listed in

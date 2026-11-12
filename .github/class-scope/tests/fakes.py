@@ -36,6 +36,7 @@ class FakeRepo:
         self.blobs: dict[str, bytes] = {}
         self.pulls: list[dict] = []
         self.events: dict[int, list[dict]] = {}
+        self.comments: dict[int, list[dict]] = {}
         self.activity: list[dict] = []
         self._n = 0
 
@@ -110,6 +111,7 @@ class FakeGitHub:
         self.writes: list[tuple[str, str, object]] = []
         self.fail: dict[str, int] = {}   # path prefix -> status to raise
         self.calls: list[str] = []
+        self._cid = 9000
 
     def _repo(self, path: str) -> tuple[FakeRepo, str]:
         parts = path.split("/")
@@ -166,6 +168,19 @@ class FakeGitHub:
             if base not in repo.commits or head not in repo.commits:
                 raise nf
             return repo.compare(base, head)
+        if rest.startswith("/pulls/") and rest[len("/pulls/"):].isdigit():
+            n = int(rest[len("/pulls/"):])
+            for pr in repo.pulls:
+                if pr["number"] == n:
+                    return pr
+            raise nf
+        if rest.startswith("/issues/comments/"):
+            cid = int(rest.rsplit("/", 1)[1])
+            for cs in repo.comments.values():
+                for c in cs:
+                    if c["id"] == cid:
+                        return c
+            raise nf
         if rest == "/activity":
             ref = params.get("ref", "")
             return [a for a in repo.activity if not ref or a["ref"] == ref]
@@ -177,6 +192,8 @@ class FakeGitHub:
         repo, rest = self._repo(path)
         if rest.startswith("/issues/") and rest.endswith("/events"):
             return list(repo.events.get(int(rest.split("/")[2]), []))
+        if rest.startswith("/issues/") and rest.endswith("/comments"):
+            return list(repo.comments.get(int(rest.split("/")[2]), []))
         if rest == "/pulls":
             state = params.get("state", "open")
             return [p for p in repo.pulls if state == "all" or p["state"] == state]
@@ -185,7 +202,26 @@ class FakeGitHub:
     def post(self, path: str, body):
         self._check_fail(path)
         self.writes.append(("POST", path, body))
+        if path.endswith("/comments"):
+            repo, rest = self._repo(path)
+            n = int(rest.split("/")[2])
+            self._cid += 1
+            c = {"id": self._cid, "user": {"login": "github-actions[bot]"}, "body": body["body"]}
+            repo.comments.setdefault(n, []).append(c)
+            return c
         return [{"name": n} for n in body.get("labels", [])]
+
+    def patch(self, path: str, body):
+        self._check_fail(path)
+        self.writes.append(("PATCH", path, body))
+        repo, rest = self._repo(path)
+        cid = int(rest.rsplit("/", 1)[1])
+        for cs in repo.comments.values():
+            for c in cs:
+                if c["id"] == cid:
+                    c.update(body)
+                    return c
+        raise class_scope.ApiError(404, {"message": "Not Found"}, path)
 
     def delete(self, path: str):
         self._check_fail(path)
