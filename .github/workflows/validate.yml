@@ -1,9 +1,13 @@
 # Pull-request checks for svc-hello.
 #
-# Three jobs:
+# Four jobs:
 #
 #   yaml    — every file under k8s/ parses. Needs nothing external.
 #   go      — the service vets and builds. Needs nothing external.
+#   go-test — the module files are the reviewed ones and the tests pass
+#             against two real Postgres servers (see the job's own comment).
+#             This is the check that can tell a good dependency bump from a
+#             bad one, for M4's Go-module-bump change class (ADR-0024 §6).
 #   claims  — claims.yaml renders against the platform's own charts, the way
 #             the platform's Argo CD Application will render it (ADR-0017 §6:
 #             "`helm template` against the platform's chart in the service
@@ -12,10 +16,24 @@
 #             names (ADR-0019 §4). It needs NO token: platform-config and
 #             systems are public repositories.
 #
-# All three are advisory for now: no ruleset in this org requires a passing
-# check yet (ADR-0018 §7), so a red X shows a mistake without blocking a
-# merge. The real gate is the platform's render at Argo CD, which no merge can
-# skip; this job moves its refusal from a failed sync to the pull request.
+# yaml, go and claims are advisory: no ruleset requires them, so a red X shows
+# a mistake without blocking a merge. For claims the real gate is the
+# platform's render at Argo CD, which no merge can skip; the job moves its
+# refusal from a failed sync to the pull request. go-test is meant to become a
+# required check on main, but only after it has failed once and passed once
+# (ADR-0019 §4); until the ruleset names it, it is advisory too. The ruleset
+# records in platform-factory/.github say which checks are required at any
+# date.
+#
+# On pull_request, GitHub runs this file as the pull request has changed it,
+# so a pull request can change the checks that judge it. Required status is
+# therefore never this workflow's alone: ADR-0024 pairs go-test with
+# class-scope, which runs from main, and with a review rule on .github/**.
+#
+# pull_request runs only for pull requests into main. A required check is
+# matched by commit and name, so without the filter a pull request into some
+# other branch, with the same head, could produce a green go-test for that
+# head (ADR-0024 §5).
 #
 # This replaces a Crossplane-era `claim` job that checked k8s/database.yaml
 # against the XRDs only when a PLATFORM_CONFIG_TOKEN secret was set. None ever
@@ -25,6 +43,7 @@ name: validate
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -89,12 +108,236 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           # Read the version from go.mod rather than repeating it here, so the
-          # pgx floor (go 1.25.0) is stated in exactly one place.
+          # go directive is stated in exactly one place.
           go-version-file: go.mod
           cache: true
 
       - run: go vet ./...
       - run: go build ./...
+
+  # go-test decides whether a change to go.mod and go.sum is safe to merge, so
+  # it checks the module files as well as the code, and it runs the tests
+  # against real servers rather than mocks.
+  #
+  # It runs inside the builder image the Dockerfile uses, pinned to the same
+  # digest, so the toolchain that judges a change is the one that builds the
+  # image. GOTOOLCHAIN=local stops a go or toolchain line in go.mod from
+  # fetching a different toolchain. (The go job above uses setup-go and the
+  # version go.mod names; it stays advisory.)
+  #
+  # Two Postgres service containers. pg uses trust authentication, which is
+  # what lets the service's real newPool connect: the service never sends a
+  # password, because in production the Cloud SQL Auth Proxy does the IAM
+  # login. pgscram asks for a SCRAM-SHA-256 password, and the password is
+  # non-ASCII: pgx normalises a password with x/text/secure/precis before
+  # SCRAM, and that is the only path through which this service reaches x/text.
+  # In a container job the services are reached by their names on the job's
+  # network, on their own port 5432, and the tests connect as postgres, so no
+  # port mapping and no psql step are needed.
+  #
+  # Step by step, and why each is here:
+  #   go mod download   fetches every module go.sum lists and checks it
+  #                     against go.sum: a tampered hash fails here.
+  #   go mod verify     checks the module cache has not been modified. It
+  #                     does not compare go.sum with the cache, so it is not
+  #                     the step that catches a tampered go.sum.
+  #   go vet, go build  with -mod=readonly, so a go.mod that needs a go.sum
+  #                     line it does not have fails instead of being fixed up.
+  #   tests             any "--- SKIP" fails the job: a skip is a pass to
+  #                     go test, and an unconfigured job must not pass.
+  #   go mod tidy -diff go.mod and go.sum must be exactly what tidy would
+  #                     write: no stale, extra or missing lines.
+  #   govulncheck       finding IDs to the job summary; never fails the job,
+  #                     because it exits 3 on standard-library findings that
+  #                     no change to go.mod can fix.
+  #
+  # It runs the pull request's code, which is what a test is for. The token is
+  # read-only and the job has no secrets.
+  go-test:
+    name: go-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      # The Dockerfile's builder image, golang:1.27.1-alpine (alpine3.24), by
+      # the multi-platform index digest that tag resolved to on 2026-11-11.
+      # Keep it equal to the Dockerfile's builder FROM.
+      image: golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414
+    services:
+      pg:
+        image: postgres:16.15-alpine3.24@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        # pg_isready over TCP, not the socket: the image's first-start
+        # initialisation runs a server that listens on the socket only, so a
+        # socket check can report ready before the real server is up.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      pgscram:
+        image: postgres:16.15-alpine3.24@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+        env:
+          # Must equal TEST_SCRAM_PASSWORD below. The env context is not
+          # available here, so the value is written twice. It is not a
+          # secret: the server lives only for this job.
+          POSTGRES_PASSWORD: "pässwörd✓"
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      TEST_DB_HOST: pg
+      TEST_DB_PORT: "5432"
+      TEST_SCRAM_HOST: pgscram
+      TEST_SCRAM_PORT: "5432"
+      TEST_SCRAM_PASSWORD: "pässwörd✓"
+    steps:
+      # The image has no git, so checkout downloads the commit through the
+      # REST API instead of cloning. Nothing here needs the history.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build -mod=readonly
+        run: go build -mod=readonly ./...
+
+      - name: go test (any skip fails)
+        run: |
+          out="${RUNNER_TEMP:-/tmp}/go-test.out"
+          go test -count=1 -v ./... > "$out" 2>&1 && rc=0 || rc=$?
+          cat "$out"
+          passed=$(grep -c -- '--- PASS' "$out" || true)
+          failed=$(grep -c -- '--- FAIL' "$out" || true)
+          skipped=$(grep -c -- '--- SKIP' "$out" || true)
+          {
+            echo "### go test"
+            echo
+            echo "passed: $passed; failed: $failed; skipped: $skipped; go test exit: $rc"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped test(s) skipped; every test must run in this job"
+            exit 1
+          fi
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::no test ran"
+            exit 1
+          fi
+
+      - name: go mod tidy -diff
+        run: go mod tidy -diff
+
+      - name: govulncheck (advisory; never fails the job)
+        continue-on-error: true
+        env:
+          GOVULNCHECK_VERSION: v1.9.0
+        run: |
+          # Belt and braces with continue-on-error: this script also ends
+          # with exit 0, so the step itself reads as a success whatever the
+          # scan finds or whether it ran at all.
+          set +e
+          out="${RUNNER_TEMP:-/tmp}/govulncheck.txt"
+          if go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"; then
+            govulncheck -show verbose ./... > "$out" 2>&1
+            rc=$?
+          else
+            rc=install-failed
+            : > "$out"
+          fi
+          cat "$out"
+          {
+            echo "### govulncheck ${GOVULNCHECK_VERSION}"
+            echo
+            echo "Exit: $rc (3 means findings, 0 none; this step never fails the job)."
+            echo "Toolchain: $(go env GOVERSION). Standard-library findings depend on it, not on go.mod."
+            echo
+            echo "| reach | id | where | found in | fixed in |"
+            echo "|---|---|---|---|---|"
+            # called: reachable from this code; imported: package imported,
+            # vulnerable symbol not called; required: module required only.
+            awk '
+              function flush() { if (id != "") print "| " lvl " | " id " | " where " | " found " | " fixed " |"; id = "" }
+              /^=== Symbol Results ===/  { flush(); lvl = "called" }
+              /^=== Package Results ===/ { flush(); lvl = "imported" }
+              /^=== Module Results ===/  { flush(); lvl = "required" }
+              /^Vulnerability #[0-9]+: / { flush(); id = $3; where = "?"; found = "?"; fixed = "?" }
+              /^  Standard library$/     { where = "stdlib" }
+              /^  Module: /              { where = $2 }
+              /^    Found in: /          { found = $3 }
+              /^    Fixed in: /          { fixed = $3 }
+              END { flush() }
+            ' "$out"
+            echo
+            echo "<details><summary>full govulncheck output</summary>"
+            echo
+            echo '```'
+            cat "$out"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # M4's injection (a) for C-18 (ADR-0024 §6, §9). It runs only on push,
+      # so it never judges a pull request, and fails only when the repository
+      # variable M4_INJECT_POST_MERGE names a module@version that go.mod at
+      # the pushed commit requires at exactly that version. Unset or empty is
+      # off. The variable is set by hand for one queue item at L2 and deleted
+      # afterwards; the agent's GitHub App cannot set it.
+      # Only the run's first attempt can fail here. The escape detector reads
+      # attempt 1, so the injected escape stands, and a re-run passes whether
+      # or not it still sees the variable: GitHub's re-run documentation does
+      # not say a re-run reads a variable's current value, and the readiness
+      # note's step 5 (delete the variable, re-run, expect a pass) must not
+      # rest on that.
+      - name: injected failure (M4, C-18)
+        if: github.event_name == 'push'
+        env:
+          INJECT: ${{ vars.M4_INJECT_POST_MERGE }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          if [ -z "$INJECT" ]; then
+            echo "M4_INJECT_POST_MERGE is not set: nothing injected"
+            exit 0
+          fi
+          if [ "$RUN_ATTEMPT" != "1" ]; then
+            echo "attempt $RUN_ATTEMPT is a re-run: nothing injected (the detector reads attempt 1)"
+            exit 0
+          fi
+          module="${INJECT%@*}"
+          version="${INJECT##*@}"
+          if [ "$module" = "$INJECT" ] || [ -z "$module" ] || [ -z "$version" ]; then
+            echo "::warning::M4_INJECT_POST_MERGE is not <module>@<version>; nothing injected"
+            exit 0
+          fi
+          # go mod edit -json is Go's own parse of go.mod, so a replace,
+          # exclude or retract line naming the same module@version does not
+          # count; only a require does.
+          required=$(go mod edit -json | awk -v m="$module" '
+            /^\t"Require": \[/ { inreq = 1; next }
+            inreq && /^\t\]/   { inreq = 0 }
+            inreq && /"Path": / { gsub(/[",]/, "", $2); path = $2 }
+            inreq && /"Version": / { gsub(/[",]/, "", $2); if (path == m) print $2 }
+          ')
+          if [ "$required" = "$version" ]; then
+            echo "::error::injected failure (M4, C-18): go.mod requires $module $version, named by M4_INJECT_POST_MERGE"
+            echo "Injected failure (M4, C-18): go.mod requires \`$module $version\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "go.mod requires ${module} at '${required:-nothing}', not ${version}: nothing injected"
 
   claims:
     name: claims.yaml against the platform's charts

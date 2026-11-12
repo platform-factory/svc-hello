@@ -445,6 +445,7 @@ generated from the tenant file instead of written by hand, is M3's question
 
 ```
 main.go                         the service: three routes, pgx, no framework
+main_test.go                    tests: handlers, pool, SQL round trip, SCRAM login; need two Postgres servers (go-test)
 go.mod / go.sum                 one dependency (pgx v5)
 Dockerfile                      multi-stage; native builder cross-compiles, distroless static runtime, nonroot
 Makefile                        login / build / push / set-image — the hand-push path
@@ -456,7 +457,8 @@ claims.yaml                     the database, as values the platform renders (fr
 k8s/database.yaml               the same claim in Crossplane's form, kept through M2b so a
                                 rollback has one; the new engine skips it
 docs/c07-denials/               three claims that must be denied — one per rule kind (M2)
-.github/workflows/validate.yml  YAML parse; go vet/build; claims.yaml rendered against the
+.github/workflows/validate.yml  YAML parse; go vet/build; go-test (module checks, the tests against two
+                                Postgres containers, govulncheck); claims.yaml rendered against the
                                 platform's charts, with no secret needed
 .github/checks/must-fail.yaml   claims the check must refuse before it trusts itself
 ```
