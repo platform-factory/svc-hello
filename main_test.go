@@ -85,6 +85,7 @@ func do(h http.HandlerFunc, method, path, body string) (int, string, http.Header
 }
 
 func TestRootAndNotFound(t *testing.T) {
+	t.Fatal("deliberate failure: go-test must fail once before it is made required (M4)")
 	s := &server{}
 	code, body, _ := do(s.handleRoot, "GET", "/", "")
 	if code != 200 || !strings.HasPrefix(body, "hello from svc-hello\nhostname: ") {
