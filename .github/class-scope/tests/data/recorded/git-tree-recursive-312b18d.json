@@ -1,0 +1,180 @@
+{
+  "sha": "d0f70de3c1b6c60df45e5ce693d3e40a8cebaf52",
+  "truncated": false,
+  "tree": [
+    {
+      "path": ".dockerignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c43135021c109a86ae1ad1a180baf7aa1f1e2cab"
+    },
+    {
+      "path": ".github",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "108727c340aaf180aeadcc7de84023a60bb407eb"
+    },
+    {
+      "path": ".github/CODEOWNERS",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1aedad2195d0d72b9e9786e06f3384320790bdc2"
+    },
+    {
+      "path": ".github/checks",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "1fdb440f06f873fdd5a5ffcb8792825e47a906b4"
+    },
+    {
+      "path": ".github/checks/must-fail.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1eac7932ee28e64ed9ea5a84f5dcfc6ef9375519"
+    },
+    {
+      "path": ".github/scripts",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "3c95897283000ba2383f34187a930ecc733fd9ed"
+    },
+    {
+      "path": ".github/scripts/check_claims.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "962fea2dbdaa6ef837750633b2827b563ea43db9"
+    },
+    {
+      "path": ".github/workflows",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "53e5f7dbfe926903e24ad986e6472a66e565f6e9"
+    },
+    {
+      "path": ".github/workflows/validate.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b76910307dfc45914f3b0c06162403c5a7ebbafe"
+    },
+    {
+      "path": "CITATION.cff",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea0d4cc0e1af4cfd6d9167df6cf2ffd233dfad89"
+    },
+    {
+      "path": "Dockerfile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5f9ec88fa54875b90ee490b073e44a134b64fa5a"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3ebf3f718839664789a2428b43def894c1c50ea2"
+    },
+    {
+      "path": "Makefile",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcfe722ab52dd3a035903f8865796f4472434b87"
+    },
+    {
+      "path": "NOTICE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "773c7ee3b2c5583c5ad45649faf7eaa8e7e921bc"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "70320b739e5d9cf287fbe7d14ef7e0148fcdf7cb"
+    },
+    {
+      "path": "claims.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f36121b8bd3dbcd12a583480c6c462caab4c6165"
+    },
+    {
+      "path": "docs",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "c2dcd4d3ab07c5e0875813e49258c9297529161b"
+    },
+    {
+      "path": "docs/c07-denials",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "9342d62ac477934e21973ad7473e2cb5f0c80511"
+    },
+    {
+      "path": "docs/c07-denials/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "936e9ac3a730d2d9b03adc6a428c8321d4deb994"
+    },
+    {
+      "path": "docs/c07-denials/cel-size-tier.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "03494f60bf373070932736318882e6210fa0e512"
+    },
+    {
+      "path": "docs/c07-denials/oversized.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ca7ec67951c494c246f78bd897ba595de55a972d"
+    },
+    {
+      "path": "docs/c07-denials/wrong-region.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b1b6d010d8566701c644a1c7a779db583557468f"
+    },
+    {
+      "path": "go.mod",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "04ee52c13d707aae8f3a8bd7a919000329abddb1"
+    },
+    {
+      "path": "go.sum",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3f716dd12523b6194234f0bb27a6cf980de0846a"
+    },
+    {
+      "path": "k8s",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8eb6cc90b6a7361e56a66f83f7297c15abd4c648"
+    },
+    {
+      "path": "k8s/database.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7caf359e77bcd005df39c8157dd15a6d26906834"
+    },
+    {
+      "path": "k8s/deployment.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "af5e2ac87b0092c3a7b7961f1861a105b0750cbc"
+    },
+    {
+      "path": "k8s/service.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e7dfd0d8b8b26248b0c62d9d14de5b4a6084cb68"
+    },
+    {
+      "path": "main.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dcabc4e1ac3c22cc2df1f81f5fe8b4681c273dd9"
+    }
+  ]
+}

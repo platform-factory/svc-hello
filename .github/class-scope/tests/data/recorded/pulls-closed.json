@@ -1,0 +1,44 @@
+[
+  {
+    "number": 25,
+    "state": "closed",
+    "merged_at": "2026-10-29T06:21:16Z",
+    "closed_at": "2026-10-29T06:21:16Z",
+    "merge_commit_sha": "312b18dd0ef06d1b3e04824171177e696a518063",
+    "head": {
+      "sha": "09541bd2a543f0bf05bf8778373b455e997fdb5d",
+      "ref": "m2b-cleanup-second"
+    },
+    "base": {
+      "ref": "main"
+    }
+  },
+  {
+    "number": 24,
+    "state": "closed",
+    "merged_at": "2026-10-20T05:00:48Z",
+    "closed_at": "2026-10-20T05:00:48Z",
+    "merge_commit_sha": "76a629486569e891570ed201d079f1a9e8b435a8",
+    "head": {
+      "sha": "b419b96364c295f18320f1a47a42b561da36fdfb",
+      "ref": "validate-reads-main"
+    },
+    "base": {
+      "ref": "main"
+    }
+  },
+  {
+    "number": 23,
+    "state": "closed",
+    "merged_at": "2026-10-20T02:56:21Z",
+    "closed_at": "2026-10-20T02:56:22Z",
+    "merge_commit_sha": "c7bd1e65d17aeec1b8171d5fe7b11bfb7f4f5b9c",
+    "head": {
+      "sha": "e7504065d63334683c57ab1fa1dd71b157a538fd",
+      "ref": "c28c-restore-second"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+]

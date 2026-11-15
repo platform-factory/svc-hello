@@ -1,0 +1,22 @@
+{
+  "status": "ahead",
+  "ahead_by": 2,
+  "behind_by": 0,
+  "total_commits": 2,
+  "base_commit": {
+    "sha": "76a629486569e891570ed201d079f1a9e8b435a8"
+  },
+  "merge_base_commit": {
+    "sha": "76a629486569e891570ed201d079f1a9e8b435a8"
+  },
+  "files": [
+    {
+      "filename": "claims.yaml",
+      "status": "modified",
+      "sha": "f36121b8bd3dbcd12a583480c6c462caab4c6165",
+      "additions": 0,
+      "deletions": 9,
+      "changes": 9
+    }
+  ]
+}
