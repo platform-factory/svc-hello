@@ -1,9 +1,6 @@
 module github.com/platform-factory/svc-hello
 
-// pgx v5.11.0 declares `go 1.25.0` in its own go.mod, so this module cannot ask
-// for less. Verified 2026-09-16 against
-// https://raw.githubusercontent.com/jackc/pgx/v5.11.0/go.mod.
-go 1.25.0
+go 1.26.0
 
 require github.com/jackc/pgx/v5 v5.11.0
 
